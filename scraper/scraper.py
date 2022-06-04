@@ -1,3 +1,4 @@
+from glob import glob
 from urllib.request import Request, urlopen
 from datetime import datetime
 import db
@@ -31,7 +32,7 @@ class Scraper:
         tables = []
         i = 0
         while(i < len(webpage)):
-            if(webpage.startswith('<table class="table table-hover table-kattis', i)):
+            if(webpage.startswith(' class="table2 report_grid-problems_table', i) or webpage.startswith(' class="table report_grid-problems_table', i)):
                 while(not webpage.startswith('<tbody>', i)): i+=1
                 table = []
                 while(1):
@@ -59,6 +60,9 @@ class Scraper:
 
     def scrape(self, time=None):
         global_uni = self.download_tables("https://open.kattis.com/ranklist/universities")[0]
+        for r in global_uni:
+            if(r[3] != ''): r[2] += " " + r[3]
+            r.pop(3)
         global_user = self.download_tables("https://open.kattis.com/ranklist")[0]
         global_country = self.download_tables("https://open.kattis.com/ranklist/countries")[0]
 
@@ -66,6 +70,8 @@ class Scraper:
 
         chalmers_user = self.download_tables("https://open.kattis.com/universities/chalmers.se")[0]
         for r in chalmers_user:
+            if(r[3] != ''): r[2] += " " + r[3]
+            r.pop(3)
             r.insert(3, "Chalmers University of Technology")
 
         self.kattis_conn.add_data(global_uni, global_user, global_country, swe_tables, chalmers_user, time)
