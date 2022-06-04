@@ -1,4 +1,3 @@
-from glob import glob
 from urllib.request import Request, urlopen
 from datetime import datetime
 import db
