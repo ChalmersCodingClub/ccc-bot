@@ -283,6 +283,7 @@ async def kattis(ctx, *args):
 		handles, labels = plt.gca().get_legend_handles_labels()
 		labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: [-1,1][named_args['variable']=='rank'] * t[1].get_ydata()[-1]))
 		plt.gca().legend(handles, labels)
+	plt.grid()
 	await sendgraph(ctx)
 
 async def sendgraph(ctx):
