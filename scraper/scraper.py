@@ -58,7 +58,7 @@ class Scraper:
         return self.get_tables(self.download_html(url))
 
     def scrape(self, time=None):
-        global_uni = self.download_tables("https://open.kattis.com/ranklist/universities")[0]
+        global_uni = self.download_tables("https://open.kattis.com/ranklist/affiliations")[0]
         for r in global_uni:
             if(r[3] != ''): r[2] += " " + r[3]
             r.pop(3)
@@ -67,7 +67,7 @@ class Scraper:
 
         swe_tables = self.download_tables("https://open.kattis.com/countries/SWE")
 
-        chalmers_user = self.download_tables("https://open.kattis.com/universities/chalmers.se")[0]
+        chalmers_user = self.download_tables("https://open.kattis.com/affiliation/chalmers.se")[0]
         for r in chalmers_user:
             if(r[3] != ''): r[2] += " " + r[3]
             r.pop(3)
