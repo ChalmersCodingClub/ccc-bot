@@ -67,7 +67,7 @@ class Scraper:
 
         swe_tables = self.download_tables("https://open.kattis.com/countries/SWE")
 
-        chalmers_user = self.download_tables("https://open.kattis.com/affiliation/chalmers.se")[0]
+        chalmers_user = self.download_tables("https://open.kattis.com/affiliations/chalmers.se")[0]
         for r in chalmers_user:
             if(r[3] != ''): r[2] += " " + r[3]
             r.pop(3)
