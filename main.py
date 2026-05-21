@@ -1,8 +1,6 @@
-import sys
 import io
-import traceback
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from datetime import datetime
 
 from matplotlib import pyplot as plt
@@ -10,11 +8,9 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.dates import num2date
 
 import db
-import scraper
 
 kattis_conn = db.KattisDbConn("db/kattis.db")
 user_conn = db.UserDbConn("db/user.db")
-scraper = scraper.Scraper()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -25,38 +21,6 @@ def main():
     with open('token.txt', 'r') as f:
         token = f.read().strip()
     client.run(token)
-
-@client.event
-async def on_ready():
-    global main_channel
-    main_channel = client.get_channel(804351000113971284)
-    scrape_timer.start()
-
-scrape_fails = 0
-@tasks.loop(minutes=10)
-async def scrape_timer():
-    await client.wait_until_ready()
-    global scrape_fails
-    curr = datetime.now().date()
-    prev = kattis_conn.max_time()
-    if(prev == None or prev.date() != curr):
-        try:
-            print("scraping...")
-            scraper.scrape()
-            print("ok!")
-            if(scrape_fails):
-                print("Scraped successfully!")
-                await main_channel.send("Lyckades scrapea nu :)")
-                scrape_fails = 0
-        except Exception as crap:
-            print("Scraping failed!\n\n", crap, "\n")
-            traceback.print_exc()
-            await main_channel.send("Scraping failed!!")
-            scrape_fails += 1
-            if(scrape_fails >= 10):
-                print("10 consecutive fails; shutting down.")
-                await main_channel.send("RAGE QUITTING")
-                await client.close()
 
 @client.command()
 async def setname(ctx, *args):
