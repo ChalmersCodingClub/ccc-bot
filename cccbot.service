@@ -1,0 +1,14 @@
+[unit]
+Description=Run CCC bot
+After=network.target
+
+[Service]
+User=webmaster
+WorkingDirectory=/home/webmaster/ccc-bot/
+ExecStart=/home/webmaster/ccc-bot/start.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

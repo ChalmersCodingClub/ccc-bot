@@ -16,7 +16,10 @@ kattis_conn = db.KattisDbConn("db/kattis.db")
 user_conn = db.UserDbConn("db/user.db")
 scraper = scraper.Scraper()
 
-client = commands.Bot("$", help_command=None)
+intents = discord.Intents.default()
+intents.message_content = True
+
+client = commands.Bot("$", help_command=None, intents=intents)
 
 def main():
     with open('token.txt', 'r') as f:
