@@ -31,7 +31,7 @@ class Scraper:
         tables = []
         i = 0
         while(i < len(webpage)):
-            if(webpage.startswith(' class="table2 report_grid-problems_table', i) or webpage.startswith(' class="table report_grid-problems_table', i)):
+            if(webpage.startswith(' class="table2 "', i)):
                 while(not webpage.startswith('<tbody>', i)): i+=1
                 table = []
                 while(1):
@@ -69,8 +69,6 @@ class Scraper:
 
         chalmers_user = self.download_tables("https://open.kattis.com/affiliations/chalmers.se")[0]
         for r in chalmers_user:
-            if(r[3] != ''): r[2] += " " + r[3]
-            r.pop(3)
             r.insert(3, "Chalmers University of Technology")
 
         self.kattis_conn.add_data(global_uni, global_user, global_country, swe_tables, chalmers_user, time)

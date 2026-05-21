@@ -2,6 +2,11 @@ import sqlite3
 from datetime import datetime
 
 
+def _num(s, conv):
+    # Kattis formats numbers with thousands-separator commas, e.g. "9,509.5".
+    return conv(s.replace(',', ''))
+
+
 class KattisDbConn:
     def __init__(self, db_file):
         self.conn = sqlite3.connect(db_file)
@@ -71,11 +76,11 @@ class KattisDbConn:
         for r in rows:
             a.append((
                 timestamp,  #timestamp
-                int(r[0]),              #rank
+                _num(r[0], int),        #rank
                 r[1],                   #uni
                 r[2],                   #subdiv
-                int(r[3]),              #users
-                float(r[4])             #score
+                _num(r[3], int),        #users
+                _num(r[4], float)       #score
             ))
         self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?,?,?)".format(table_name), a)
 
@@ -84,11 +89,11 @@ class KattisDbConn:
         for r in rows:
             a.append((
                 timestamp,  #timestamp
-                int(r[0]),              #rank
+                _num(r[0], int),        #rank
                 r[1],                   #name
                 r[2],                   #place
                 r[3],                   #uni
-                float(r[4])             #score
+                _num(r[4], float)       #score
             ))
         self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?,?,?)".format(table_name), a)
 
@@ -97,9 +102,9 @@ class KattisDbConn:
         for r in rows:
             a.append((
                 timestamp,  #timestamp
-                int(r[0]),              #rank
+                _num(r[0], int),        #rank
                 r[1],                   #subdiv
-                float(r[2])             #score
+                _num(r[2], float)       #score
             ))
         self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?)".format(table_name), a)
 
@@ -108,11 +113,11 @@ class KattisDbConn:
         for r in rows:
             a.append((
                 timestamp,  #timestamp
-                int(r[0]),              #rank
+                _num(r[0], int),        #rank
                 r[1],                   #country
-                int(r[2]),              #users
-                int(r[3]),              #unis
-                float(r[4])             #score
+                _num(r[2], int),        #users
+                _num(r[3], int),        #unis
+                _num(r[4], float)       #score
             ))
         self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?,?,?)".format(table_name), a)
 
