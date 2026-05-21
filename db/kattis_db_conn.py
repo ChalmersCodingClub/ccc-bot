@@ -7,199 +7,240 @@ def _num(s, conv):
     return conv(s.replace(',', ''))
 
 
+# Maps the bot's user-facing type to the obs table that holds it.
+_TABLE_BY_TYPE = {
+    'user':    'user_obs',
+    'uni':     'affiliation_obs',
+    'country': 'country_obs',
+}
+
+# Columns selected for history(), in the order main.py unpacks them.
+# Kept identical to the pre-migration row shape so main.py needs no change.
+_HISTORY_COLS_BY_TYPE = {
+    'user':    'timestamp, rank, display_name, place, affiliation, score',
+    'uni':     'timestamp, rank, display_name, subdiv, num_users, score',
+    'country': 'timestamp, rank, display_name, num_users, num_affiliations, score',
+}
+
+
+def _allowed_contexts(type):
+    a = ['global']
+    if type in ('user', 'uni'): a.append('swe')
+    if type == 'user':          a.append('chalmers')
+    return a
+
+
 class KattisDbConn:
     def __init__(self, db_file):
         self.conn = sqlite3.connect(db_file)
         self.create_tables()
 
     def create_tables(self):
-        self.create_uni_table("global_uni")
-        self.create_user_table("global_user")
-        self.create_country_table("global_country")
-
-        self.create_uni_table("swe_uni")
-        self.create_user_table("swe_user")
-        self.create_subdiv_table("swe_subdiv")
-
-        self.create_user_table("chalmers_user")
-        
-
-    def create_uni_table(self, table_name):
         self.conn.execute(
-            'CREATE TABLE IF NOT EXISTS {} ('
-            'timestamp      INTEGER,'
-            'rank           INTEGER,'
-            'uni            TEXT,'
-            'subdiv         TEXT,'
-            'users          INTEGER,'
-            'score          REAL'
-            ')'.format(table_name)
+            'CREATE TABLE IF NOT EXISTS user_obs ('
+            'timestamp     INTEGER,'
+            'context       TEXT,'
+            'shortname     TEXT,'
+            'display_name  TEXT,'
+            'rank          INTEGER,'
+            'score         REAL,'
+            'place         TEXT,'
+            'affiliation   TEXT'
+            ')'
+        )
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS affiliation_obs ('
+            'timestamp     INTEGER,'
+            'context       TEXT,'
+            'shortname     TEXT,'
+            'display_name  TEXT,'
+            'rank          INTEGER,'
+            'score         REAL,'
+            'subdiv        TEXT,'
+            'num_users     INTEGER'
+            ')'
+        )
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS country_obs ('
+            'timestamp        INTEGER,'
+            'context          TEXT,'
+            'shortname        TEXT,'
+            'display_name     TEXT,'
+            'rank             INTEGER,'
+            'score            REAL,'
+            'num_users        INTEGER,'
+            'num_affiliations INTEGER'
+            ')'
+        )
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS subdivision_obs ('
+            'timestamp     INTEGER,'
+            'context       TEXT,'
+            'shortname     TEXT,'
+            'display_name  TEXT,'
+            'rank          INTEGER,'
+            'score         REAL,'
+            'country       TEXT'
+            ')'
+        )
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS language_obs ('
+            'timestamp     INTEGER,'
+            'context       TEXT,'
+            'shortname     TEXT,'
+            'display_name  TEXT,'
+            'rank          INTEGER,'
+            'score         REAL,'
+            'num_users     INTEGER'
+            ')'
+        )
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS entities ('
+            'kind                  TEXT,'
+            'shortname             TEXT,'
+            'display_name          TEXT,'
+            'ever_top_100          INTEGER DEFAULT 0,'
+            'discover_users        INTEGER DEFAULT 0,'
+            'discover_affiliations INTEGER DEFAULT 0,'
+            'first_seen            INTEGER,'
+            'last_seen_alive       INTEGER,'
+            'PRIMARY KEY (kind, shortname)'
+            ')'
         )
 
-    def create_user_table(self, table_name):
-        self.conn.execute(
-            'CREATE TABLE IF NOT EXISTS {} ('
-            'timestamp      INTEGER,'
-            'rank           INTEGER,'
-            'name           TEXT,'
-            'place          TEXT,' # country or subdiv or both
-            'uni            TEXT,'
-            'score          REAL'
-            ')'.format(table_name)
+    # ---- write path (Phase 1: same data, new tables) -------------------------
+
+    def _add_user_rows(self, rows, context, timestamp):
+        a = [(
+            timestamp, context, None,
+            r[1],                       # display_name
+            _num(r[0], int),            # rank
+            _num(r[4], float),          # score
+            r[2],                       # place (country or subdiv or both)
+            r[3],                       # affiliation
+        ) for r in rows]
+        self.conn.executemany(
+            'INSERT INTO user_obs (timestamp, context, shortname, display_name, rank, score, place, affiliation) '
+            'VALUES (?,?,?,?,?,?,?,?)', a
         )
 
-    def create_subdiv_table(self, table_name):
-        self.conn.execute(
-            'CREATE TABLE IF NOT EXISTS {} ('
-            'timestamp      INTEGER,'
-            'rank           INTEGER,'
-            'subdiv         TEXT,'
-            'score          REAL'
-            ')'.format(table_name)
+    def _add_affiliation_rows(self, rows, context, timestamp):
+        a = [(
+            timestamp, context, None,
+            r[1],                       # display_name
+            _num(r[0], int),            # rank
+            _num(r[4], float),          # score
+            r[2],                       # subdiv
+            _num(r[3], int),            # num_users
+        ) for r in rows]
+        self.conn.executemany(
+            'INSERT INTO affiliation_obs (timestamp, context, shortname, display_name, rank, score, subdiv, num_users) '
+            'VALUES (?,?,?,?,?,?,?,?)', a
         )
 
-    def create_country_table(self, table_name):
-        self.conn.execute(
-            'CREATE TABLE IF NOT EXISTS {} ('
-            'timestamp      INTEGER,'
-            'rank           INTEGER,'
-            'country        TEXT,'
-            'users          INTEGER,'
-            'unis           INTEGER,'
-            'score          REAL'
-            ')'.format(table_name)
+    def _add_country_rows(self, rows, context, timestamp):
+        a = [(
+            timestamp, context, None,
+            r[1],                       # display_name
+            _num(r[0], int),            # rank
+            _num(r[4], float),          # score
+            _num(r[2], int),            # num_users
+            _num(r[3], int),            # num_affiliations
+        ) for r in rows]
+        self.conn.executemany(
+            'INSERT INTO country_obs (timestamp, context, shortname, display_name, rank, score, num_users, num_affiliations) '
+            'VALUES (?,?,?,?,?,?,?,?)', a
         )
 
-
-    def add_uni_rows(self, rows, table_name, timestamp):
-        a = []
-        for r in rows:
-            a.append((
-                timestamp,  #timestamp
-                _num(r[0], int),        #rank
-                r[1],                   #uni
-                r[2],                   #subdiv
-                _num(r[3], int),        #users
-                _num(r[4], float)       #score
-            ))
-        self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?,?,?)".format(table_name), a)
-
-    def add_user_rows(self, rows, table_name, timestamp):
-        a = []
-        for r in rows:
-            a.append((
-                timestamp,  #timestamp
-                _num(r[0], int),        #rank
-                r[1],                   #name
-                r[2],                   #place
-                r[3],                   #uni
-                _num(r[4], float)       #score
-            ))
-        self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?,?,?)".format(table_name), a)
-
-    def add_subdiv_rows(self, rows, table_name, timestamp):
-        a = []
-        for r in rows:
-            a.append((
-                timestamp,  #timestamp
-                _num(r[0], int),        #rank
-                r[1],                   #subdiv
-                _num(r[2], float)       #score
-            ))
-        self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?)".format(table_name), a)
-
-    def add_country_rows(self, rows, table_name, timestamp):
-        a = []
-        for r in rows:
-            a.append((
-                timestamp,  #timestamp
-                _num(r[0], int),        #rank
-                r[1],                   #country
-                _num(r[2], int),        #users
-                _num(r[3], int),        #unis
-                _num(r[4], float)       #score
-            ))
-        self.conn.executemany("INSERT INTO {} VALUES (?,?,?,?,?,?)".format(table_name), a)
-
+    def _add_subdivision_rows(self, rows, context, timestamp, country):
+        a = [(
+            timestamp, context, None,
+            r[1],                       # display_name
+            _num(r[0], int),            # rank
+            _num(r[2], float),          # score
+            country,
+        ) for r in rows]
+        self.conn.executemany(
+            'INSERT INTO subdivision_obs (timestamp, context, shortname, display_name, rank, score, country) '
+            'VALUES (?,?,?,?,?,?,?)', a
+        )
 
     def add_data(self, global_uni, global_user, global_country, swe_tables, chalmers_user, time=None):
-        if(time == None): time = datetime.now()
+        if time is None: time = datetime.now()
         time = int(time.timestamp())
 
-        self.add_uni_rows(global_uni, "global_uni", time)
-        self.add_user_rows(global_user, "global_user", time)
-        self.add_country_rows(global_country, "global_country", time)
+        self._add_affiliation_rows(global_uni,     'global', time)
+        self._add_user_rows(       global_user,    'global', time)
+        self._add_country_rows(    global_country, 'global', time)
 
-        self.add_uni_rows(swe_tables[0], "swe_uni", time)
-        self.add_user_rows(swe_tables[1], "swe_user", time)
-        self.add_subdiv_rows(swe_tables[2], "swe_subdiv", time)
+        self._add_affiliation_rows( swe_tables[0], 'swe', time)
+        self._add_user_rows(        swe_tables[1], 'swe', time)
+        self._add_subdivision_rows( swe_tables[2], 'swe', time, country='SWE')
 
-        self.add_user_rows(chalmers_user, "chalmers_user", time)
+        self._add_user_rows(chalmers_user, 'chalmers', time)
 
         self.conn.commit()
 
-    #use for extra sql-injection protection
-    def is_table(self, table):
-        return table in ['global_uni', 'global_user', 'global_country', 'swe_uni', 'swe_user', 'swe_subdiv', 'chalmers_user']
+    # ---- read path -----------------------------------------------------------
 
     def max_time(self, timestamp=False):
-        #antar att åtminstone ett uni läggs till varje gång
-        t = self.conn.execute("SELECT MAX(timestamp) FROM global_uni").fetchone()[0]
-        if(t == None): return t
-        if(timestamp): return t
+        t = self.conn.execute('SELECT MAX(timestamp) FROM affiliation_obs').fetchone()[0]
+        if t is None: return t
+        if timestamp: return t
         return datetime.fromtimestamp(t)
 
-    def global_user_history(self, name):
-        r = self.conn.execute("SELECT * from global_user WHERE name=?", (name,)).fetchall()
-        return r
-
-    def swe_user_history(self, name):
-        r = self.conn.execute("SELECT * from swe_user WHERE name=?", (name,)).fetchall()
-        return r
-
-    def top_swe_unis(self):
-        r = self.conn.execute("SELECT uni from swe_uni WHERE timestamp=?", (self.max_time().timestamp(),)).fetchall()
-        return [x[0] for x in r]
-
-    def swe_uni_history(self, uni):
-        r = self.conn.execute("SELECT * from swe_uni WHERE uni=?", (uni,)).fetchall()
-        return r
-
     def history(self, mintimestamp, type, names, place='all'):
-        allowed_places = ['global']
-        if(type in ['user', 'uni']): allowed_places.append('swe')
-        if(type == 'user'): allowed_places.append('chalmers')
-
-        if(place == 'all'):
-            h = [self.history(mintimestamp, type, names, place) for place in allowed_places]
-            r = [(name, [w for y in h for x in y for z in y if(z[0]==name) for w in z[1]]) for name in names]
-            for _,x in r:
-                x.sort()
-                i = 1
-                while(i < len(x)):
-                    if(x[i][0]-x[i-1][0] < 3600):
-                        x.pop(i)
-                    else: i+=1
+        allowed = _allowed_contexts(type)
+        if place == 'all':
+            contexts = allowed
+        elif place in allowed:
+            contexts = [place]
         else:
-            table = place + "_" + type
-            assert(self.is_table(table)) #sql-injection protection
-            r = self.conn.execute("SELECT * from %s WHERE %s IN (%s) AND timestamp >= ?" % (table, 'name' if type=='user' else type, ','.join('?'*len(names))), names+[mintimestamp]).fetchall()
-            r = [(name, [x for x in r if x[2]==name]) for name in names]
+            return [(name, []) for name in names]
+
+        if not names:
+            return []
+
+        cols = _HISTORY_COLS_BY_TYPE[type]
+        table = _TABLE_BY_TYPE[type]
+        qs_names = ','.join('?' * len(names))
+        qs_ctx = ','.join('?' * len(contexts))
+        rows = self.conn.execute(
+            f'SELECT {cols} FROM {table} '
+            f'WHERE display_name IN ({qs_names}) '
+            f'AND context IN ({qs_ctx}) '
+            f'AND timestamp >= ?',
+            (*names, *contexts, mintimestamp)
+        ).fetchall()
+
+        r = [(name, sorted(row for row in rows if row[2] == name)) for name in names]
+        if place == 'all':
+            # Same entity at the same scrape appears once per context (chalmers/swe/global).
+            # Score is identical across contexts; collapse near-simultaneous duplicates.
+            for _, x in r:
+                i = 1
+                while i < len(x):
+                    if x[i][0] - x[i-1][0] < 3600:
+                        x.pop(i)
+                    else:
+                        i += 1
         return r
 
     def get_top(self, type, place, cnt):
-        table = place + "_" + type
-        if(not self.is_table(table)): return None
-        time = self.max_time(True)
-        r = self.conn.execute("SELECT %s,score from %s WHERE timestamp=?" % ('name' if type=='user' else type, table), (time,)).fetchall()
-        r.sort(key=lambda x:-x[1]) # (unnecessary)
-        r = r[:cnt]
-        return [x[0] for x in r]
+        table = _TABLE_BY_TYPE.get(type)
+        if table is None or place not in _allowed_contexts(type):
+            return None
+        t = self.max_time(True)
+        rows = self.conn.execute(
+            f'SELECT display_name, score FROM {table} WHERE timestamp=? AND context=?',
+            (t, place)
+        ).fetchall()
+        rows.sort(key=lambda x: -x[1])
+        return [x[0] for x in rows[:cnt]]
 
     def printall(self):
-        for table in ["global_uni", "global_user", "global_country", "swe_uni", "swe_user", "swe_subdiv", "chalmers_user"]:
-            print("----------", table, "----------")
-            x = self.conn.execute("SELECT * from " + table).fetchall()
-            x = [str(y) for y in x]
-            print("\n".join(x))
-            if(table != "chalmers_user"): print("\n")
+        for table in ['user_obs', 'affiliation_obs', 'country_obs', 'subdivision_obs', 'language_obs', 'entities']:
+            print('----------', table, '----------')
+            x = self.conn.execute('SELECT * from ' + table).fetchall()
+            print('\n'.join(str(y) for y in x))
+            print()

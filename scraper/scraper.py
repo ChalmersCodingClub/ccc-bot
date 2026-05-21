@@ -8,7 +8,7 @@ class Scraper:
         self.kattis_conn = db.KattisDbConn("db/kattis.db")
 
     def download_html(self, url):
-        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        req = Request(url, headers={'User-Agent': 'Mozilla/5.0 (Contact: Joshua Andersson)'})
         webpage = urlopen(req).read().decode('utf-8')
         return webpage
 
