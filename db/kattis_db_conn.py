@@ -108,78 +108,131 @@ class KattisDbConn:
             ')'
         )
 
-    # ---- write path (Phase 1: same data, new tables) -------------------------
+    # ---- write path ----------------------------------------------------------
+    #
+    # Row cells are (text, slug) tuples as returned by Scraper.parse_cell.
+    # `slug` is the path of the first <a href> in the cell with the leading
+    # slash stripped (e.g. 'users/joshua-andersson', 'countries/SWE/O'), or
+    # None if the cell had no anchor. Each helper strips the prefix it
+    # expects and stores just the entity identifier in `shortname`.
 
-    def _add_user_rows(self, rows, context, timestamp):
-        a = [(
-            timestamp, context, None,
-            r[1],                       # display_name
-            _num(r[0], int),            # rank
-            _num(r[4], float),          # score
-            r[2],                       # place (country or subdiv or both)
-            r[3],                       # affiliation
-        ) for r in rows]
+    def add_user_rows(self, rows, context, timestamp):
+        a = []
+        for r in rows:
+            name_text, name_slug = r[1]
+            sn = _strip(name_slug, 'users/')
+            a.append((
+                timestamp, context, sn,
+                name_text,                  # display_name
+                _num(r[0][0], int),         # rank
+                _num(r[4][0], float),       # score
+                r[2][0],                    # place
+                r[3][0],                    # affiliation
+            ))
+            self._touch_entity('user', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
         self.conn.executemany(
             'INSERT INTO user_obs (timestamp, context, shortname, display_name, rank, score, place, affiliation) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
+        self.conn.commit()
 
-    def _add_affiliation_rows(self, rows, context, timestamp):
-        a = [(
-            timestamp, context, None,
-            r[1],                       # display_name
-            _num(r[0], int),            # rank
-            _num(r[4], float),          # score
-            r[2],                       # subdiv
-            _num(r[3], int),            # num_users
-        ) for r in rows]
+    def add_affiliation_rows(self, rows, context, timestamp):
+        a = []
+        for r in rows:
+            name_text, name_slug = r[1]
+            sn = _strip(name_slug, 'affiliations/')
+            a.append((
+                timestamp, context, sn,
+                name_text,                  # display_name
+                _num(r[0][0], int),         # rank
+                _num(r[4][0], float),       # score
+                r[2][0],                    # subdiv
+                _num(r[3][0], int),         # num_users
+            ))
+            self._touch_entity('affiliation', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
         self.conn.executemany(
             'INSERT INTO affiliation_obs (timestamp, context, shortname, display_name, rank, score, subdiv, num_users) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
+        self.conn.commit()
 
-    def _add_country_rows(self, rows, context, timestamp):
-        a = [(
-            timestamp, context, None,
-            r[1],                       # display_name
-            _num(r[0], int),            # rank
-            _num(r[4], float),          # score
-            _num(r[2], int),            # num_users
-            _num(r[3], int),            # num_affiliations
-        ) for r in rows]
+    def add_country_rows(self, rows, context, timestamp):
+        a = []
+        for r in rows:
+            name_text, name_slug = r[1]
+            sn = _strip(name_slug, 'countries/')
+            a.append((
+                timestamp, context, sn,
+                name_text,                  # display_name
+                _num(r[0][0], int),         # rank
+                _num(r[4][0], float),       # score
+                _num(r[2][0], int),         # num_users
+                _num(r[3][0], int),         # num_affiliations
+            ))
+            self._touch_entity('country', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
         self.conn.executemany(
             'INSERT INTO country_obs (timestamp, context, shortname, display_name, rank, score, num_users, num_affiliations) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
+        self.conn.commit()
 
-    def _add_subdivision_rows(self, rows, context, timestamp, country):
-        a = [(
-            timestamp, context, None,
-            r[1],                       # display_name
-            _num(r[0], int),            # rank
-            _num(r[2], float),          # score
-            country,
-        ) for r in rows]
+    def add_subdivision_rows(self, rows, context, timestamp, country):
+        a = []
+        for r in rows:
+            name_text, name_slug = r[1]
+            sn = _strip(name_slug, 'countries/')
+            a.append((
+                timestamp, context, sn,
+                name_text,                  # display_name
+                _num(r[0][0], int),         # rank
+                _num(r[2][0], float),       # score
+                country,
+            ))
+            self._touch_entity('subdivision', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
         self.conn.executemany(
             'INSERT INTO subdivision_obs (timestamp, context, shortname, display_name, rank, score, country) '
             'VALUES (?,?,?,?,?,?,?)', a
         )
-
-    def add_data(self, global_uni, global_user, global_country, swe_tables, chalmers_user, time=None):
-        if time is None: time = datetime.now()
-        time = int(time.timestamp())
-
-        self._add_affiliation_rows(global_uni,     'global', time)
-        self._add_user_rows(       global_user,    'global', time)
-        self._add_country_rows(    global_country, 'global', time)
-
-        self._add_affiliation_rows( swe_tables[0], 'swe', time)
-        self._add_user_rows(        swe_tables[1], 'swe', time)
-        self._add_subdivision_rows( swe_tables[2], 'swe', time, country='SWE')
-
-        self._add_user_rows(chalmers_user, 'chalmers', time)
-
         self.conn.commit()
+
+    def add_language_rows(self, rows, context, timestamp):
+        a = []
+        for r in rows:
+            name_text, _ = r[1]
+            # Languages have no anchor on the ranklist page — use the display
+            # name as the canonical shortname so the entities PK stays unique.
+            sn = name_text
+            a.append((
+                timestamp, context, sn,
+                name_text,                  # display_name
+                _num(r[0][0], int),         # rank
+                _num(r[3][0], float),       # score
+                _num(r[2][0], int),         # num_users
+            ))
+            self._touch_entity('language', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
+        self.conn.executemany(
+            'INSERT INTO language_obs (timestamp, context, shortname, display_name, rank, score, num_users) '
+            'VALUES (?,?,?,?,?,?,?)', a
+        )
+        self.conn.commit()
+
+    def _touch_entity(self, kind, shortname, display_name, timestamp, qualifies_top_100):
+        # `shortname` may legitimately be None if the source page had no
+        # anchor for this entity. Fall back to display_name so the PK is
+        # always populated (SQLite treats multiple NULLs as distinct, which
+        # would defeat uniqueness).
+        if shortname is None:
+            shortname = display_name
+        self.conn.execute(
+            'INSERT INTO entities '
+            '  (kind, shortname, display_name, ever_top_100, first_seen, last_seen_alive) '
+            'VALUES (?, ?, ?, ?, ?, ?) '
+            'ON CONFLICT(kind, shortname) DO UPDATE SET '
+            '  display_name=excluded.display_name, '
+            '  ever_top_100=max(ever_top_100, excluded.ever_top_100), '
+            '  last_seen_alive=max(last_seen_alive, excluded.last_seen_alive)',
+            (kind, shortname, display_name, int(qualifies_top_100), timestamp, timestamp)
+        )
 
     # ---- read path -----------------------------------------------------------
 
@@ -230,7 +283,13 @@ class KattisDbConn:
         table = _TABLE_BY_TYPE.get(type)
         if table is None or place not in _allowed_contexts(type):
             return None
-        t = self.max_time(True)
+        # Per-URL scraping decoupled the per-table timestamps, so each query
+        # must pick its OWN table+context's latest, not a global max_time.
+        t = self.conn.execute(
+            f'SELECT MAX(timestamp) FROM {table} WHERE context=?', (place,)
+        ).fetchone()[0]
+        if t is None:
+            return []
         rows = self.conn.execute(
             f'SELECT display_name, score FROM {table} WHERE timestamp=? AND context=?',
             (t, place)
@@ -244,3 +303,8 @@ class KattisDbConn:
             x = self.conn.execute('SELECT * from ' + table).fetchall()
             print('\n'.join(str(y) for y in x))
             print()
+
+
+def _strip(slug, prefix):
+    if slug is None: return None
+    return slug.removeprefix(prefix)
