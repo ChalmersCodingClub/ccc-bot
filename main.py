@@ -1,5 +1,7 @@
+import asyncio
 import io
 import discord
+from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
 
@@ -8,14 +10,50 @@ from matplotlib.ticker import MaxNLocator
 from matplotlib.dates import num2date
 
 import db
+from scraper import Scraper
+from scraper.scraper import EntityGone
 
 kattis_conn = db.KattisDbConn("db/kattis.db")
 user_conn = db.UserDbConn("db/user.db")
+scraper = Scraper()
 
 intents = discord.Intents.default()
 intents.message_content = True
 
 client = commands.Bot("$", help_command=None, intents=intents)
+
+
+@client.event
+async def on_ready():
+    if getattr(client, '_synced', False):
+        return
+    for guild in client.guilds:
+        client.tree.copy_global_to(guild=guild)
+        await client.tree.sync(guild=guild)
+    client._synced = True
+    print(f'synced slash commands to {len(client.guilds)} guild(s)', flush=True)
+
+
+@client.tree.command(name="track-user", description="Start tracking a Kattis user by URL slug.")
+@app_commands.describe(shortname="The user's Kattis URL slug, e.g. 'joshua-andersson' from https://open.kattis.com/users/joshua-andersson")
+async def track_user(interaction: discord.Interaction, shortname: str):
+    await interaction.response.defer(ephemeral=True)
+    shortname = shortname.strip().lstrip('/').removeprefix('users/').strip('/')
+    try:
+        await asyncio.to_thread(scraper.scrape_user, shortname)
+    except EntityGone:
+        await interaction.followup.send(
+            f"No Kattis user with slug `{shortname}`. Check the URL on their profile page.",
+            ephemeral=True,
+        )
+        return
+    except Exception as e:
+        await interaction.followup.send(f"Error checking `{shortname}`: {e}", ephemeral=True)
+        return
+    await interaction.followup.send(
+        f"Now tracking `{shortname}`. They'll be backstop-scraped daily.",
+        ephemeral=True,
+    )
 
 def main():
     with open('token.txt', 'r') as f:
