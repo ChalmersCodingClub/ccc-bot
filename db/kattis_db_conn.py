@@ -32,7 +32,10 @@ def _allowed_contexts(type):
 
 class KattisDbConn:
     def __init__(self, db_file):
-        self.conn = sqlite3.connect(db_file)
+        # check_same_thread=False so the bot can do scraper.scrape_user from
+        # asyncio.to_thread (worker thread). The SQLite file-level lock still
+        # serializes writers across threads and processes.
+        self.conn = sqlite3.connect(db_file, check_same_thread=False)
         self.create_tables()
 
     def create_tables(self):
