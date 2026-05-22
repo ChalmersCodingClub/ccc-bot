@@ -51,7 +51,7 @@ async def track_user(interaction: discord.Interaction, shortname: str):
         await interaction.followup.send(f"Error checking `{shortname}`: {e}", ephemeral=True)
         return
     await interaction.followup.send(
-        f"Now tracking `{shortname}`. They'll be backstop-scraped daily.",
+        f"Now tracking `{shortname}`. Their score will be scraped daily.",
         ephemeral=True,
     )
 
