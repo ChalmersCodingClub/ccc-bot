@@ -99,7 +99,7 @@ class KattisDbConn:
             'kind                  TEXT,'
             'shortname             TEXT,'
             'display_name          TEXT,'
-            'ever_top_100          INTEGER DEFAULT 0,'
+            'tracked               INTEGER DEFAULT 0,'
             'discover_users        INTEGER DEFAULT 0,'
             'discover_affiliations INTEGER DEFAULT 0,'
             'first_seen            INTEGER,'
@@ -116,7 +116,7 @@ class KattisDbConn:
     # None if the cell had no anchor. Each helper strips the prefix it
     # expects and stores just the entity identifier in `shortname`.
 
-    def add_user_rows(self, rows, context, timestamp):
+    def add_user_rows(self, rows, context, timestamp, force_tracked=False):
         a = []
         for r in rows:
             name_text, name_slug = r[1]
@@ -129,14 +129,14 @@ class KattisDbConn:
                 r[2][0],                    # place
                 r[3][0],                    # affiliation
             ))
-            self._touch_entity('user', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
+            self._touch_entity('user', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
         self.conn.executemany(
             'INSERT INTO user_obs (timestamp, context, shortname, display_name, rank, score, place, affiliation) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
         self.conn.commit()
 
-    def add_affiliation_rows(self, rows, context, timestamp):
+    def add_affiliation_rows(self, rows, context, timestamp, force_tracked=False):
         a = []
         for r in rows:
             name_text, name_slug = r[1]
@@ -149,14 +149,14 @@ class KattisDbConn:
                 r[2][0],                    # subdiv
                 _num(r[3][0], int),         # num_users
             ))
-            self._touch_entity('affiliation', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
+            self._touch_entity('affiliation', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
         self.conn.executemany(
             'INSERT INTO affiliation_obs (timestamp, context, shortname, display_name, rank, score, subdiv, num_users) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
         self.conn.commit()
 
-    def add_country_rows(self, rows, context, timestamp):
+    def add_country_rows(self, rows, context, timestamp, force_tracked=False):
         a = []
         for r in rows:
             name_text, name_slug = r[1]
@@ -169,14 +169,14 @@ class KattisDbConn:
                 _num(r[2][0], int),         # num_users
                 _num(r[3][0], int),         # num_affiliations
             ))
-            self._touch_entity('country', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
+            self._touch_entity('country', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
         self.conn.executemany(
             'INSERT INTO country_obs (timestamp, context, shortname, display_name, rank, score, num_users, num_affiliations) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
         self.conn.commit()
 
-    def add_subdivision_rows(self, rows, context, timestamp, country):
+    def add_subdivision_rows(self, rows, context, timestamp, country, force_tracked=False):
         a = []
         for r in rows:
             name_text, name_slug = r[1]
@@ -188,14 +188,14 @@ class KattisDbConn:
                 _num(r[2][0], float),       # score
                 country,
             ))
-            self._touch_entity('subdivision', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
+            self._touch_entity('subdivision', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
         self.conn.executemany(
             'INSERT INTO subdivision_obs (timestamp, context, shortname, display_name, rank, score, country) '
             'VALUES (?,?,?,?,?,?,?)', a
         )
         self.conn.commit()
 
-    def add_language_rows(self, rows, context, timestamp):
+    def add_language_rows(self, rows, context, timestamp, force_tracked=False):
         a = []
         for r in rows:
             name_text, _ = r[1]
@@ -209,14 +209,27 @@ class KattisDbConn:
                 _num(r[3][0], float),       # score
                 _num(r[2][0], int),         # num_users
             ))
-            self._touch_entity('language', sn, name_text, timestamp, qualifies_top_100=(context == 'global'))
+            self._touch_entity('language', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
         self.conn.executemany(
             'INSERT INTO language_obs (timestamp, context, shortname, display_name, rank, score, num_users) '
             'VALUES (?,?,?,?,?,?,?)', a
         )
         self.conn.commit()
 
-    def _touch_entity(self, kind, shortname, display_name, timestamp, qualifies_top_100):
+    def add_user_backstop(self, shortname, display_name, rank, score, timestamp):
+        """Single-row write for the per-user backstop (/users/<slug>)."""
+        self.conn.execute(
+            'INSERT INTO user_obs '
+            '  (timestamp, context, shortname, display_name, rank, score, place, affiliation) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (timestamp, 'global', shortname, display_name, rank, score, None, None)
+        )
+        # Touch entity — qualifies_tracked=True because backstop only runs for
+        # already-tracked users and the observation alone proves liveness.
+        self._touch_entity('user', shortname, display_name, timestamp, qualifies_tracked=True)
+        self.conn.commit()
+
+    def _touch_entity(self, kind, shortname, display_name, timestamp, qualifies_tracked):
         # `shortname` may legitimately be None if the source page had no
         # anchor for this entity. Fall back to display_name so the PK is
         # always populated (SQLite treats multiple NULLs as distinct, which
@@ -225,14 +238,33 @@ class KattisDbConn:
             shortname = display_name
         self.conn.execute(
             'INSERT INTO entities '
-            '  (kind, shortname, display_name, ever_top_100, first_seen, last_seen_alive) '
+            '  (kind, shortname, display_name, tracked, first_seen, last_seen_alive) '
             'VALUES (?, ?, ?, ?, ?, ?) '
             'ON CONFLICT(kind, shortname) DO UPDATE SET '
             '  display_name=excluded.display_name, '
-            '  ever_top_100=max(ever_top_100, excluded.ever_top_100), '
+            '  tracked=max(tracked, excluded.tracked), '
             '  last_seen_alive=max(last_seen_alive, excluded.last_seen_alive)',
-            (kind, shortname, display_name, int(qualifies_top_100), timestamp, timestamp)
+            (kind, shortname, display_name, int(qualifies_tracked), timestamp, timestamp)
         )
+
+    def set_flags(self, kind, shortname, **flags):
+        """Manually set entity flags. Creates the row if absent.
+        Allowed flags: tracked, discover_users, discover_affiliations."""
+        allowed = {'tracked', 'discover_users', 'discover_affiliations'}
+        bad = set(flags) - allowed
+        if bad:
+            raise ValueError(f'unsupported flags: {sorted(bad)}')
+        cols = ', '.join(flags.keys())
+        vals = list(flags.values())
+        placeholders = ', '.join('?' * len(vals))
+        updates = ', '.join(f'{k}=excluded.{k}' for k in flags)
+        self.conn.execute(
+            f'INSERT INTO entities (kind, shortname, {cols}) '
+            f'VALUES (?, ?, {placeholders}) '
+            f'ON CONFLICT(kind, shortname) DO UPDATE SET {updates}',
+            (kind, shortname, *vals)
+        )
+        self.conn.commit()
 
     # ---- read path -----------------------------------------------------------
 
