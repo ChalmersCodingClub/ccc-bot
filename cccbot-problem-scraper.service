@@ -1,0 +1,13 @@
+[unit]
+Description=Run CCC bot problem scraper
+After=network.target
+
+[Service]
+User=webmaster
+WorkingDirectory=/home/webmaster/ccc-bot/
+ExecStart=/home/webmaster/ccc-bot/start-problems.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

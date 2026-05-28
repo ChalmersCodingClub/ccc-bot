@@ -111,6 +111,62 @@ class KattisDbConn:
             ')'
         )
 
+        # ---- problem statistics (scraped by the problem_scraper service) ----
+        # All time-series; no `context` column (problems aren't per-ranklist).
+        # Inferable values are intentionally NOT stored (see CLAUDE.md):
+        #   submission_ratio = accepted / submissions
+        #   full_solve_ratio = full_solves / authors
+        #   difficulty_category derives from the difficulty number.
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS problem_obs ('
+            'timestamp        INTEGER,'
+            'shortname        TEXT,'
+            'display_name     TEXT,'
+            'difficulty_low   REAL,'
+            'difficulty_high  REAL,'
+            'submissions      INTEGER,'
+            'accepted         INTEGER,'
+            'authors          INTEGER,'
+            'full_solves      INTEGER'
+            ')'
+        )
+        # Verdict donut: one row per slice, so arbitrary verdict labels
+        # (Memory Limit Exceeded, Judge Error, ...) are all captured.
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS problem_verdict ('
+            'timestamp     INTEGER,'
+            'shortname     TEXT,'
+            'verdict       TEXT,'
+            'count         INTEGER'
+            ')'
+        )
+        # Partial-score difficulty breakpoints: one row per breakpoint.
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS problem_partial_difficulty ('
+            'timestamp     INTEGER,'
+            'shortname     TEXT,'
+            'breakpoint    REAL,'
+            'difficulty    REAL'
+            ')'
+        )
+        # All-languages toplists. kind in {best_scoring, fastest, shortest}.
+        # value = score / runtime-seconds / byte-length depending on kind.
+        self.conn.execute(
+            'CREATE TABLE IF NOT EXISTS problem_toplist ('
+            'timestamp         INTEGER,'
+            'shortname         TEXT,'
+            'kind              TEXT,'
+            'rank              INTEGER,'
+            'user_shortname    TEXT,'
+            'user_display_name TEXT,'
+            'value             REAL,'
+            'language          TEXT,'
+            'solved_at         TEXT'
+            ')'
+        )
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_problem_obs_sn_ts ON problem_obs (shortname, timestamp)')
+        self.conn.execute('CREATE INDEX IF NOT EXISTS idx_problem_toplist_sn_ts ON problem_toplist (shortname, timestamp)')
+
     # ---- write path ----------------------------------------------------------
     #
     # Row cells are (text, slug) tuples as returned by Scraper.parse_cell.
@@ -231,6 +287,70 @@ class KattisDbConn:
         # already-tracked users and the observation alone proves liveness.
         self._touch_entity('user', shortname, display_name, timestamp, qualifies_tracked=True)
         self.conn.commit()
+
+    # ---- problem write path --------------------------------------------------
+
+    def register_problems(self, rows, timestamp):
+        """Discovery: register problems found on the /problems listing as
+        tracked entities. `rows` is an iterable of (shortname, display_name)."""
+        for shortname, display_name in rows:
+            self._touch_entity('problem', shortname, display_name, timestamp, qualifies_tracked=True)
+        self.conn.commit()
+
+    def add_problem_obs(self, shortname, display_name, timestamp,
+                        difficulty_low, difficulty_high,
+                        submissions, accepted, authors, full_solves):
+        self.conn.execute(
+            'INSERT INTO problem_obs '
+            '  (timestamp, shortname, display_name, difficulty_low, difficulty_high, '
+            '   submissions, accepted, authors, full_solves) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            (timestamp, shortname, display_name, difficulty_low, difficulty_high,
+             submissions, accepted, authors, full_solves)
+        )
+        self._touch_entity('problem', shortname, display_name, timestamp, qualifies_tracked=True)
+        self.conn.commit()
+
+    def add_problem_verdicts(self, shortname, timestamp, slices):
+        """`slices` is an iterable of (verdict, count)."""
+        self.conn.executemany(
+            'INSERT INTO problem_verdict (timestamp, shortname, verdict, count) VALUES (?,?,?,?)',
+            [(timestamp, shortname, v, c) for v, c in slices]
+        )
+        self.conn.commit()
+
+    def add_problem_partial_difficulty(self, shortname, timestamp, breakpoints):
+        """`breakpoints` is an iterable of (breakpoint, difficulty)."""
+        self.conn.executemany(
+            'INSERT INTO problem_partial_difficulty (timestamp, shortname, breakpoint, difficulty) VALUES (?,?,?,?)',
+            [(timestamp, shortname, bp, d) for bp, d in breakpoints]
+        )
+        self.conn.commit()
+
+    def add_problem_toplist(self, shortname, timestamp, kind, rows):
+        """`rows` is an iterable of
+        (rank, user_shortname, user_display_name, value, language, solved_at)."""
+        self.conn.executemany(
+            'INSERT INTO problem_toplist '
+            '  (timestamp, shortname, kind, rank, user_shortname, user_display_name, value, language, solved_at) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            [(timestamp, shortname, kind, *r) for r in rows]
+        )
+        self.conn.commit()
+
+    def problems_to_scrape(self, alive_since):
+        """All tracked, alive problems ordered stalest-first (never-scraped
+        first, then oldest problem_obs). Returns [(shortname, display_name)].
+        The problem_scraper snapshots this once per rotation and iterates it."""
+        return self.conn.execute('''
+            SELECT e.shortname, e.display_name
+            FROM entities e
+            LEFT JOIN (SELECT shortname, MAX(timestamp) mt FROM problem_obs GROUP BY shortname) p
+              ON p.shortname = e.shortname
+            WHERE e.kind='problem' AND e.tracked=1
+              AND (e.last_seen_alive IS NULL OR e.last_seen_alive > ?)
+            ORDER BY COALESCE(p.mt, 0) ASC
+        ''', (alive_since,)).fetchall()
 
     def _touch_entity(self, kind, shortname, display_name, timestamp, qualifies_tracked):
         # `shortname` may legitimately be None if the source page had no
