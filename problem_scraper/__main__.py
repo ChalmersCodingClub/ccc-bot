@@ -5,7 +5,7 @@ import traceback
 from .scraper import ProblemScraper
 from scraper.http_client import EntityGone
 
-POLITE_INTERVAL_SECONDS = 60            # between detail-page fetches
+POLITE_INTERVAL_SECONDS = 30            # between detail-page fetches
 ALIVE_WINDOW_SECONDS = 10 * 86400       # decay after 10 days off the listing
 MAX_LIST_FAILS = 10                     # consecutive list failures -> exit
 
