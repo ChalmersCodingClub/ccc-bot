@@ -33,8 +33,7 @@ shouldn't be coupled to the Discord event loop or bot reconnects.
 
 ## Database (`db/kattis.db`)
 
-Current schema (post Phase 1 + 2a + 2b). Managed by
-`db/kattis_db_conn.py:KattisDbConn`.
+Schema managed by `db/kattis_db_conn.py:KattisDbConn`.
 
 **Observation tables** — one per entity kind, all time-series:
 - `user_obs(timestamp, context, shortname, display_name, rank, score, place, affiliation)`
@@ -52,15 +51,10 @@ contexts, only rank differs** (rank is position within that ranklist).
   - `tracked` — sticky boolean, "I care about this entity." Set by: observation
     in a `context='global'` scrape, OR discovery scrape (`force_tracked`), OR
     manual `set_flags`. Consumed by the scraper to decide what to backstop.
-    (Was named `ever_top_100` before Phase 2b; renamed because the qualifier is
-    "I care", not literally top-100.)
+    The qualifier is "I care", not literally top-100.
   - `discover_users` / `discover_affiliations` — flags that make the scraper
     enumerate an entity's sub-entities. Set manually via `set_flags`.
   - `last_seen_alive` — last successful observation. Drives 10-day decay.
-
-**Legacy tables** (`global_user`, `swe_user`, `chalmers_user`, `global_uni`,
-`swe_uni`, `global_country`, `swe_subdiv`) — pre-Phase-1 shape, left as backup
-after migration. No reads or writes. Safe to `DROP` once new system is trusted.
 
 ### Problem statistics tables
 
@@ -93,8 +87,8 @@ stats page is also not scraped (by request — uninteresting).
 - Slugs are Kattis URL identifiers: user `joshua-andersson`, affiliation
   `chalmers.se`, country `SWE` (ISO-3166-α3), subdivision `SWE/AB` (ISO-3166-2).
   They are **opaque** — `jasnah` = "Alexander Skidanov". Display name ≠ slug.
-- Slugs are captured **going forward** (Phase 2a+) from the first `<a href>` in
-  each scraped cell. **Historical rows have `shortname=NULL`** — they predate
+- Slugs are captured **going forward** from the first `<a href>` in each
+  scraped cell. **Historical rows have `shortname=NULL`** — they predate
   capture. A one-shot backfill from a Kattis admin DB dump is planned but not
   done; do not assume historical rows have slugs.
 - Languages have no anchor/slug → `shortname = display_name` for them.
@@ -223,15 +217,9 @@ and dedups observations within 3600s (collapses the per-context duplicates).
 - `/ranklist/teams` is 404 (no public team ranklist). `/ranklist/challenge`
   exists (a separate user score) but is intentionally **not** scraped.
 
-## Migrations
-- `migrate_schema.py <db>` — Phase 1: legacy per-context tables → unified obs
-  tables. Idempotent (aborts if obs tables non-empty).
-- `migrate_2b.py <db>` — Phase 2b: rename `ever_top_100`→`tracked`, seed
-  `country/SWE` and `affiliation/chalmers.se` discovery flags. Idempotent.
-
 ## Deployment
 **Production deploys are run by the user, not by Claude.** Surface the command
-list (stop services → backup `db/kattis.db` → `git pull` → run any migration →
+list (stop services → backup `db/kattis.db` → `git pull` →
 install/enable any **new** service unit, e.g. `cccbot-problem-scraper.service`
 via `systemctl daemon-reload` + `enable --now` → start services → tail
 `journalctl`); the user executes on the deploy host

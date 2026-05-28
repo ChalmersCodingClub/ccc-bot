@@ -1,4 +1,4 @@
-[unit]
+[Unit]
 Description=Run CCC bot scraper
 After=network.target
 

@@ -1,4 +1,4 @@
-[unit]
+[Unit]
 Description=Run CCC bot
 After=network.target
 
