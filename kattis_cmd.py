@@ -144,9 +144,12 @@ async def _run(interaction, kind, names, days, metric, scope, top, log, member=N
     attr = _METRIC_ATTR[pmetric]
     series, missing = [], []
     for name, rows in hist:
-        if rows:
-            series.append((name, [(datetime.fromtimestamp(r.timestamp), getattr(r, attr))
-                                   for r in rows]))
+        # Drop points where the metric is NULL (e.g. historical rows with no
+        # num_users) so None never reaches matplotlib.
+        pts = [(datetime.fromtimestamp(r.timestamp), getattr(r, attr))
+               for r in rows if getattr(r, attr) is not None]
+        if pts:
+            series.append((name, pts))
         else:
             missing.append(name)
 
@@ -159,7 +162,12 @@ async def _run(interaction, kind, names, days, metric, scope, top, log, member=N
     # CPU-bound render has the full 15-min followup window.
     await interaction.response.defer(thinking=True)
     req = PlotRequest(metric=pmetric, scope=pscope, days=days, log=log, entity_kind=kind)
-    png = await asyncio.to_thread(plot.render, req, series)
+    try:
+        png = await asyncio.to_thread(plot.render, req, series)
+    except Exception as e:
+        # Already deferred (public "thinking…"); we MUST follow up or it hangs.
+        await interaction.followup.send(f"Failed to render the graph: {e}")
+        return
     content = ("couldn't find: " + ", ".join(missing)) if missing else None
     await interaction.followup.send(
         content=content, file=discord.File(io.BytesIO(png), filename="graph.png"))

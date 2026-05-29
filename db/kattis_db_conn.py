@@ -470,10 +470,15 @@ class KattisDbConn:
         if table is None:
             return []
         if prefix:
+            # Build the pattern in Python (bound param) and escape LIKE
+            # wildcards in the user-typed prefix. Avoids relying on SQLite's
+            # double-quoted-string fallback for the '%'. LIKE is already
+            # ASCII case-insensitive, so no COLLATE is needed.
+            esc = prefix.replace('\\', r'\\').replace('%', r'\%').replace('_', r'\_')
             rows = self.conn.execute(
-                f'SELECT DISTINCT display_name FROM {table} '
-                f'WHERE display_name LIKE ? || "%" COLLATE NOCASE LIMIT ?',
-                (prefix, limit)
+                f"SELECT DISTINCT display_name FROM {table} "
+                f"WHERE display_name LIKE ? ESCAPE '\\' LIMIT ?",
+                (esc + '%', limit)
             ).fetchall()
         else:
             rows = self.conn.execute(
