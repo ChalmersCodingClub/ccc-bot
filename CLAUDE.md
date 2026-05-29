@@ -228,6 +228,12 @@ via `systemctl daemon-reload` + `enable --now` → start services → tail
 verification lives at `~/temp/cccbot-backup`. Verify against it before handing
 off deploy commands.
 
+Unit files are **copied** into `/etc/systemd/system/`, not symlinked from the
+repo (so `systemctl enable services/*.service` fails — they already exist
+there). After any `.service` change, the deploy must `sudo cp services/*.service
+/etc/systemd/system/` + `daemon-reload`, else systemd runs the stale unit. The
+units' `ExecStart` points at `services/start*.sh`, so `chmod +x` those too.
+
 ## Deferred / future work
 - **Per-affiliation/country aggregate backstop** — if an affiliation drops out
   of `/ranklist/affiliations` top 100 we lose its aggregate score series. Only
