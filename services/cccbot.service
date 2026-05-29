@@ -1,13 +1,14 @@
 [Unit]
-Description=Run CCC bot scraper
+Description=Run CCC bot
 After=network.target
 
 [Service]
 User=webmaster
 WorkingDirectory=/home/webmaster/ccc-bot/
-ExecStart=/home/webmaster/ccc-bot/start-scraper.sh
+ExecStart=/home/webmaster/ccc-bot/services/start.sh
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+

@@ -7,13 +7,14 @@ users but tracks global data too.
 
 ## Architecture: three systemd services, one shared SQLite DB
 
-- **Bot** (`main.py`, `cccbot.service`, `start.sh`) — `python main.py`.
-  Discord-facing. Reads `db/kattis.db`, owns `db/user.db`. Never scrapes.
-- **Ranklist scraper** (`scraper/__main__.py`, `cccbot-scraper.service`,
-  `start-scraper.sh`) — `python -m scraper`. Polls Kattis ranklists, writes
-  `db/kattis.db`. No Discord dependency.
+- **Bot** (`main.py`, `services/cccbot.service`, `services/start.sh`) —
+  `python main.py`. Discord-facing. Reads `db/kattis.db`, owns `db/user.db`.
+  Never scrapes.
+- **Ranklist scraper** (`scraper/__main__.py`, `services/cccbot-scraper.service`,
+  `services/start-scraper.sh`) — `python -m scraper`. Polls Kattis ranklists,
+  writes `db/kattis.db`. No Discord dependency.
 - **Problem scraper** (`problem_scraper/__main__.py`,
-  `cccbot-problem-scraper.service`, `start-problems.sh`) —
+  `services/cccbot-problem-scraper.service`, `services/start-problems.sh`) —
   `python -m problem_scraper`. Polls per-problem statistics pages, writes the
   `problem_*` tables in `db/kattis.db`. Separate service so problem-scrape
   scheduling is decoupled from the ranklist loop. See "Problem statistics".
