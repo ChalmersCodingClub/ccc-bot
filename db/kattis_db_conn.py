@@ -485,19 +485,22 @@ class KattisDbConn:
         table = _TABLE_BY_TYPE.get(type)
         if table is None or place not in _allowed_contexts(type):
             return None
-        # Per-URL scraping decoupled the per-table timestamps, so each query
-        # must pick its OWN table+context's latest, not a global max_time.
-        t = self.conn.execute(
-            f'SELECT MAX(timestamp) FROM {table} WHERE context=?', (place,)
-        ).fetchone()[0]
-        if t is None:
-            return []
+        # Take each entity's LATEST row in this context, then sort by score.
+        # We can't just take MAX(timestamp)'s rows: for users the per-user
+        # backstop writes lone context='global' rows at their own timestamps,
+        # so the single latest timestamp is often one backstopped user — which
+        # would make top-N return just that one. Per-entity-latest is robust to
+        # that (and identical to the old behaviour for backstop-free types).
         rows = self.conn.execute(
-            f'SELECT display_name, score FROM {table} WHERE timestamp=? AND context=?',
-            (t, place)
+            f'SELECT u.display_name, u.score FROM {table} u '
+            f'JOIN (SELECT display_name, MAX(timestamp) AS mt FROM {table} '
+            f'      WHERE context=? GROUP BY display_name) m '
+            f'  ON m.display_name=u.display_name AND m.mt=u.timestamp '
+            f'WHERE u.context=? '
+            f'ORDER BY u.score DESC LIMIT ?',
+            (place, place, cnt)
         ).fetchall()
-        rows.sort(key=lambda x: -x[1])
-        return [x[0] for x in rows[:cnt]]
+        return [x[0] for x in rows]
 
     def printall(self):
         for table in ['user_obs', 'affiliation_obs', 'country_obs', 'subdivision_obs', 'language_obs', 'entities']:
