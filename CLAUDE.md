@@ -201,8 +201,17 @@ intent is off). Three layers for the graphing command:
   that completes the last token via `distinct_display_names`), `days`, `metric`,
   `scope`, `top`, `log`; `user` also has a native `member:` picker. All three
   subcommands delegate to `_run`. `setup(kattis_conn, user_conn)` wires the DB
-  handles. Empty input → caller's `/setname` (user) else global top-5. The
-  legend auto-shows for ≤10 lines (`plot._LEGEND_MAX_LINES`); no manual toggle.
+  handles. Empty input → caller's `/setname` (user) else top-N **of the chosen
+  scope** (not always global). The legend auto-shows for ≤10 lines
+  (`plot._LEGEND_MAX_LINES`); no manual toggle.
+  - **`scope` choices are restricted per type** to the ranklists that exist
+    (`_allowed_contexts`): user g/swe/chalmers, uni g/swe, country none (global
+    only). Offering a scope a type has no ranklist for would just yield empty
+    results.
+  - **`rank` never defaults to `all`** — it's a position within ONE ranklist
+    and differs across contexts, so `_default_scope` returns a concrete scope
+    for rank (chalmers for user, global else). `all` is fine for score/#users/
+    #unis, which are context-invariant, and merges them via `history`'s dedup.
   Missing names → public "couldn't find: …" note alongside the graph; errors/
   personal config are ephemeral.
 - `main.py` — wiring only. Registers the group, `/track-user`, and the

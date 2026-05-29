@@ -43,26 +43,35 @@ SCORE_C = Choice(name="score", value="score")
 RANK_C = Choice(name="rank", value="rank")
 NUSERS_C = Choice(name="num_users", value="num_users")
 NAFF_C = Choice(name="num_affiliations", value="num_affiliations")
-SCOPE_CHOICES = [Choice(name=s, value=s) for s in ("global", "swe", "chalmers")]
+# Scope choices are restricted per type to the ranklists that actually exist
+# (see _allowed_contexts): users have global/swe/chalmers, affiliations only
+# global/swe, countries only global (so /kattis country takes no scope at all).
+SCOPE_CHOICES_USER = [Choice(name=s, value=s) for s in ("global", "swe", "chalmers")]
+SCOPE_CHOICES_UNI = [Choice(name=s, value=s) for s in ("global", "swe")]
 
-_COMMON_DESC = {
+_BASE_DESC = {
     "names": "Comma-separated names; autocompletes against tracked names.",
     "days": "Only show the last N days (default: all history).",
     "metric": "What to plot (default: score).",
-    "scope": "Which ranklist's rank to use (default depends on metric).",
-    "top": "Also include the global top-N by score (0 = none).",
+    "top": "Also include the top-N by score in the chosen scope (0 = none).",
     "log": "Use a logarithmic y-axis.",
 }
-_USER_DESC = {**_COMMON_DESC, "member": "A Discord member; uses their /setname."}
+_SCOPE_DESC = {"scope": "Which ranklist to read from (matters for rank; default depends on metric)."}
+_USER_DESC = {**_BASE_DESC, **_SCOPE_DESC, "member": "A Discord member; uses their /setname."}
+_UNI_DESC = {**_BASE_DESC, **_SCOPE_DESC}
+_COUNTRY_DESC = _BASE_DESC
 
 _DEFAULT_DAYS = 10 ** 5
 _TOP_FALLBACK = 5  # used when nothing is specified
 
 
 def _default_scope(kind, metric):
-    # Preserve the legacy quirk: user+rank with no explicit scope -> chalmers.
-    if kind == "user" and metric is Metric.RANK:
-        return Scope.CHALMERS
+    # rank is a position within ONE ranklist and differs across contexts, so it
+    # must never resolve to 'all' (which would merge/mix ranklists). Pick a
+    # concrete default: chalmers for users (legacy, Chalmers-biased bot), global
+    # otherwise. score/#users/#unis are context-invariant, so 'all' is fine.
+    if metric is Metric.RANK:
+        return Scope.CHALMERS if kind == "user" else Scope.GLOBAL
     return Scope.ALL
 
 
@@ -118,7 +127,10 @@ async def _run(interaction, kind, names, days, metric, scope, top, log, member=N
     pscope = _SCOPE[scope] if scope else _default_scope(kind, pmetric)
 
     if used_top > 0:
-        for n in (kattis_conn.get_top(kind, "global", used_top) or []):
+        # Pull the top from the chosen scope so the names actually have rows in
+        # it; 'all' isn't a single ranklist, so fall back to the global list.
+        top_ctx = "global" if pscope is Scope.ALL else pscope.value
+        for n in (kattis_conn.get_top(kind, top_ctx, used_top) or []):
             add(n)
 
     if not requested:
@@ -155,7 +167,7 @@ async def _run(interaction, kind, names, days, metric, scope, top, log, member=N
 
 @group.command(name="user", description="Plot Kattis users' score/rank history.")
 @app_commands.describe(**_USER_DESC)
-@app_commands.choices(metric=[SCORE_C, RANK_C], scope=SCOPE_CHOICES)
+@app_commands.choices(metric=[SCORE_C, RANK_C], scope=SCOPE_CHOICES_USER)
 @app_commands.autocomplete(names=_names_autocomplete)
 async def kattis_user(interaction: discord.Interaction,
                       names: str = "",
@@ -169,8 +181,8 @@ async def kattis_user(interaction: discord.Interaction,
 
 
 @group.command(name="uni", description="Plot affiliations' score/rank/#users history.")
-@app_commands.describe(**_COMMON_DESC)
-@app_commands.choices(metric=[SCORE_C, RANK_C, NUSERS_C], scope=SCOPE_CHOICES)
+@app_commands.describe(**_UNI_DESC)
+@app_commands.choices(metric=[SCORE_C, RANK_C, NUSERS_C], scope=SCOPE_CHOICES_UNI)
 @app_commands.autocomplete(names=_names_autocomplete)
 async def kattis_uni(interaction: discord.Interaction,
                      names: str = "",
@@ -183,17 +195,17 @@ async def kattis_uni(interaction: discord.Interaction,
 
 
 @group.command(name="country", description="Plot countries' score/rank/#users/#unis history.")
-@app_commands.describe(**_COMMON_DESC)
-@app_commands.choices(metric=[SCORE_C, RANK_C, NUSERS_C, NAFF_C], scope=SCOPE_CHOICES)
+@app_commands.describe(**_COUNTRY_DESC)
+@app_commands.choices(metric=[SCORE_C, RANK_C, NUSERS_C, NAFF_C])
 @app_commands.autocomplete(names=_names_autocomplete)
 async def kattis_country(interaction: discord.Interaction,
                          names: str = "",
                          days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
                          metric: Optional[str] = None,
-                         scope: Optional[str] = None,
                          top: app_commands.Range[int, 0, 50] = 0,
                          log: bool = False):
-    await _run(interaction, "country", names, days, metric, scope, top, log)
+    # country has only a global ranklist, so there is no scope option.
+    await _run(interaction, "country", names, days, metric, None, top, log)
 
 
 def setup(k, u):
