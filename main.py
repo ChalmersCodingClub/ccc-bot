@@ -27,6 +27,12 @@ client.tree.add_command(kattis_cmd.setup(kattis_conn, user_conn))
 async def on_ready():
     if getattr(client, '_synced', False):
         return
+    # Clear any stale guild-scoped commands left by the old per-guild sync
+    # (the old bot guild-synced /track-user). Without this they coexist with
+    # the new global commands and show up twice.
+    for guild in client.guilds:
+        client.tree.clear_commands(guild=guild)
+        await client.tree.sync(guild=guild)
     # Global sync (not per-guild copy) so the commands are available in DMs as
     # well as guilds. Global publishes can take up to ~1h to propagate the
     # first time.
