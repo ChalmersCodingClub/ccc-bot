@@ -46,14 +46,12 @@ NAFF_C = Choice(name="num_affiliations", value="num_affiliations")
 SCOPE_CHOICES = [Choice(name=s, value=s) for s in ("global", "swe", "chalmers")]
 
 _COMMON_DESC = {
-    "metric": "What to plot (default: score).",
     "names": "Comma-separated names; autocompletes against tracked names.",
+    "days": "Only show the last N days (default: all history).",
+    "metric": "What to plot (default: score).",
     "scope": "Which ranklist's rank to use (default depends on metric).",
     "top": "Also include the global top-N by score (0 = none).",
-    "days": "Only show the last N days (default: all history).",
     "log": "Use a logarithmic y-axis.",
-    "nozoom": "Include 0 on the y-axis instead of zooming to the data.",
-    "legend": "Force the legend on/off (default: auto, on for ≤5 lines).",
 }
 _USER_DESC = {**_COMMON_DESC, "member": "A Discord member; uses their /setname."}
 
@@ -84,14 +82,9 @@ async def _names_autocomplete(interaction: discord.Interaction, current: str):
     return out
 
 
-async def _run(interaction, kind, metric, names, member, scope, top, days, log, nozoom, legend):
+async def _run(interaction, kind, names, days, metric, scope, top, log, member=None):
     # metric/scope arrive as raw choice values (str) or None when omitted.
     pmetric = _METRIC[metric or "score"]
-
-    if log and nozoom:
-        await interaction.response.send_message(
-            "`log` and `nozoom` can't be combined.", ephemeral=True)
-        return
 
     requested, seen = [], set()
     def add(n):
@@ -153,8 +146,7 @@ async def _run(interaction, kind, metric, names, member, scope, top, days, log, 
     # Public graph. DB reads above are fast (local sqlite); defer here so the
     # CPU-bound render has the full 15-min followup window.
     await interaction.response.defer(thinking=True)
-    req = PlotRequest(metric=pmetric, scope=pscope, days=days,
-                      log=log, zoom=not nozoom, legend=legend, entity_kind=kind)
+    req = PlotRequest(metric=pmetric, scope=pscope, days=days, log=log, entity_kind=kind)
     png = await asyncio.to_thread(plot.render, req, series)
     content = ("couldn't find: " + ", ".join(missing)) if missing else None
     await interaction.followup.send(
@@ -166,16 +158,14 @@ async def _run(interaction, kind, metric, names, member, scope, top, days, log, 
 @app_commands.choices(metric=[SCORE_C, RANK_C], scope=SCOPE_CHOICES)
 @app_commands.autocomplete(names=_names_autocomplete)
 async def kattis_user(interaction: discord.Interaction,
-                      metric: Optional[str] = None,
                       names: str = "",
-                      member: Optional[discord.Member] = None,
+                      days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
+                      metric: Optional[str] = None,
                       scope: Optional[str] = None,
                       top: app_commands.Range[int, 0, 50] = 0,
-                      days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
-                      log: bool = False,
-                      nozoom: bool = False,
-                      legend: Optional[bool] = None):
-    await _run(interaction, "user", metric, names, member, scope, top, days, log, nozoom, legend)
+                      member: Optional[discord.Member] = None,
+                      log: bool = False):
+    await _run(interaction, "user", names, days, metric, scope, top, log, member=member)
 
 
 @group.command(name="uni", description="Plot affiliations' score/rank/#users history.")
@@ -183,15 +173,13 @@ async def kattis_user(interaction: discord.Interaction,
 @app_commands.choices(metric=[SCORE_C, RANK_C, NUSERS_C], scope=SCOPE_CHOICES)
 @app_commands.autocomplete(names=_names_autocomplete)
 async def kattis_uni(interaction: discord.Interaction,
-                     metric: Optional[str] = None,
                      names: str = "",
+                     days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
+                     metric: Optional[str] = None,
                      scope: Optional[str] = None,
                      top: app_commands.Range[int, 0, 50] = 0,
-                     days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
-                     log: bool = False,
-                     nozoom: bool = False,
-                     legend: Optional[bool] = None):
-    await _run(interaction, "uni", metric, names, None, scope, top, days, log, nozoom, legend)
+                     log: bool = False):
+    await _run(interaction, "uni", names, days, metric, scope, top, log)
 
 
 @group.command(name="country", description="Plot countries' score/rank/#users/#unis history.")
@@ -199,15 +187,13 @@ async def kattis_uni(interaction: discord.Interaction,
 @app_commands.choices(metric=[SCORE_C, RANK_C, NUSERS_C, NAFF_C], scope=SCOPE_CHOICES)
 @app_commands.autocomplete(names=_names_autocomplete)
 async def kattis_country(interaction: discord.Interaction,
-                         metric: Optional[str] = None,
                          names: str = "",
+                         days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
+                         metric: Optional[str] = None,
                          scope: Optional[str] = None,
                          top: app_commands.Range[int, 0, 50] = 0,
-                         days: app_commands.Range[int, 1, None] = _DEFAULT_DAYS,
-                         log: bool = False,
-                         nozoom: bool = False,
-                         legend: Optional[bool] = None):
-    await _run(interaction, "country", metric, names, None, scope, top, days, log, nozoom, legend)
+                         log: bool = False):
+    await _run(interaction, "country", names, days, metric, scope, top, log)
 
 
 def setup(k, u):

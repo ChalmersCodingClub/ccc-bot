@@ -197,11 +197,12 @@ intent is off). Three layers for the graphing command:
   type**: `/kattis user|uni|country`. Each exposes only its valid `metric`
   choices (user: score/rank; uni: +num_users; country: +num_users/
   num_affiliations) so the metric×type matrix is structural, not runtime.
-  Shared options: `names` (comma-separated, with autocomplete that completes
-  the last token via `distinct_display_names`), `scope`, `top`, `days`, `log`,
-  `nozoom`, `legend`; `user` also has a native `member:` picker. All three
+  Shared options (in display order): `names` (comma-separated, with autocomplete
+  that completes the last token via `distinct_display_names`), `days`, `metric`,
+  `scope`, `top`, `log`; `user` also has a native `member:` picker. All three
   subcommands delegate to `_run`. `setup(kattis_conn, user_conn)` wires the DB
-  handles. Empty input → caller's `/setname` (user) else global top-5.
+  handles. Empty input → caller's `/setname` (user) else global top-5. The
+  legend auto-shows for ≤10 lines (`plot._LEGEND_MAX_LINES`); no manual toggle.
   Missing names → public "couldn't find: …" note alongside the graph; errors/
   personal config are ephemeral.
 - `main.py` — wiring only. Registers the group, `/track-user`, and the

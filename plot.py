@@ -14,7 +14,9 @@ from datetime import datetime
 
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
-from matplotlib.dates import num2date
+
+# Above this many lines the legend clutters more than it helps, so it's hidden.
+_LEGEND_MAX_LINES = 10
 
 
 class Metric(enum.Enum):
@@ -38,8 +40,6 @@ class PlotRequest:
     scope: Scope
     days: int
     log: bool
-    zoom: bool                 # False == legacy "nozoom": anchor the axis at 0/1
-    legend: bool | None        # None == auto (on when <= 5 lines)
     entity_kind: str           # 'user' | 'uni' | 'country' — for context only
 
 
@@ -49,12 +49,8 @@ Series = list[tuple[str, list[tuple[datetime, float]]]]
 def render(req: PlotRequest, series: Series) -> bytes:
     """Render the given (label, [(date, value), ...]) series to PNG bytes.
 
-    Series with no points are skipped. Raises ValueError on the log+nozoom
-    conflict so the caller can surface it before doing this expensive work.
+    Series with no points are skipped.
     """
-    if req.log and not req.zoom:
-        raise ValueError("`log` and `nozoom` can't be combined.")
-
     fig = Figure()
     ax = fig.add_subplot(111)
 
@@ -76,15 +72,7 @@ def render(req: PlotRequest, series: Series) -> bytes:
         ax.set_yscale("log")
     ax.tick_params(axis="x", labelrotation=20)
 
-    if not req.zoom and n_lines:
-        # Anchor the axis at 0 (or rank 1) so it isn't zoomed into the data
-        # range. The point carries no label, so it stays out of the legend.
-        xmin, xmax = ax.get_xlim()
-        xmid = num2date((xmin + xmax) / 2)
-        ax.plot([xmid], [1 if req.metric is Metric.RANK else 0])
-
-    show_legend = req.legend if req.legend is not None else (n_lines <= 5)
-    if show_legend and n_lines:
+    if 0 < n_lines <= _LEGEND_MAX_LINES:
         handles, labels = ax.get_legend_handles_labels()
         # Order the legend best-first: ascending rank, descending otherwise.
         sign = 1 if req.metric is Metric.RANK else -1
