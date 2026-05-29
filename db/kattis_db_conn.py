@@ -1,5 +1,15 @@
 import sqlite3
+from collections import namedtuple
 from datetime import datetime
+
+
+# Named row returned by history(). Carries a superset of the per-type metrics;
+# fields not applicable to a given entity kind are None. Lets the bot's plot
+# loop select a metric by attribute name instead of a per-type tuple index.
+HistoryRow = namedtuple(
+    "HistoryRow",
+    "timestamp rank display_name score num_users num_affiliations",
+)
 
 
 def _num(s, conv):
@@ -14,12 +24,20 @@ _TABLE_BY_TYPE = {
     'country': 'country_obs',
 }
 
-# Columns selected for history(), in the order main.py unpacks them.
-# Kept identical to the pre-migration row shape so main.py needs no change.
+# Columns selected for history(), per type. Only the fields the bot actually
+# plots are projected; _HISTORY_ROW_BUILDER wraps each raw tuple into a
+# HistoryRow, filling N/A metrics with None. (The unused place/affiliation/
+# subdiv columns are intentionally not selected.)
 _HISTORY_COLS_BY_TYPE = {
-    'user':    'timestamp, rank, display_name, place, affiliation, score',
-    'uni':     'timestamp, rank, display_name, subdiv, num_users, score',
-    'country': 'timestamp, rank, display_name, num_users, num_affiliations, score',
+    'user':    'timestamp, rank, display_name, score',
+    'uni':     'timestamp, rank, display_name, score, num_users',
+    'country': 'timestamp, rank, display_name, score, num_users, num_affiliations',
+}
+
+_HISTORY_ROW_BUILDER = {
+    'user':    lambda r: HistoryRow(r[0], r[1], r[2], r[3], None, None),
+    'uni':     lambda r: HistoryRow(r[0], r[1], r[2], r[3], r[4], None),
+    'country': lambda r: HistoryRow(r[0], r[1], r[2], r[3], r[4], r[5]),
 }
 
 
@@ -166,6 +184,10 @@ class KattisDbConn:
         )
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_problem_obs_sn_ts ON problem_obs (shortname, timestamp)')
         self.conn.execute('CREATE INDEX IF NOT EXISTS idx_problem_toplist_sn_ts ON problem_toplist (shortname, timestamp)')
+        # Speeds the bot's history() `display_name IN (...)` reads and the
+        # per-keystroke autocomplete `LIKE` scans (distinct_display_names).
+        for t in ('user_obs', 'affiliation_obs', 'country_obs'):
+            self.conn.execute(f'CREATE INDEX IF NOT EXISTS idx_{t}_dn ON {t} (display_name)')
 
     # ---- write path ----------------------------------------------------------
     #
@@ -411,28 +433,53 @@ class KattisDbConn:
 
         cols = _HISTORY_COLS_BY_TYPE[type]
         table = _TABLE_BY_TYPE[type]
+        build = _HISTORY_ROW_BUILDER[type]
         qs_names = ','.join('?' * len(names))
         qs_ctx = ','.join('?' * len(contexts))
-        rows = self.conn.execute(
+        raw = self.conn.execute(
             f'SELECT {cols} FROM {table} '
             f'WHERE display_name IN ({qs_names}) '
             f'AND context IN ({qs_ctx}) '
             f'AND timestamp >= ?',
             (*names, *contexts, mintimestamp)
         ).fetchall()
+        rows = [build(x) for x in raw]
 
-        r = [(name, sorted(row for row in rows if row[2] == name)) for name in names]
+        # Sort by timestamp explicitly: HistoryRow sorts lexicographically and a
+        # None metric vs a number would TypeError on later fields.
+        r = [(name, sorted((row for row in rows if row.display_name == name),
+                           key=lambda row: row.timestamp))
+             for name in names]
         if place == 'all':
             # Same entity at the same scrape appears once per context (chalmers/swe/global).
             # Score is identical across contexts; collapse near-simultaneous duplicates.
             for _, x in r:
                 i = 1
                 while i < len(x):
-                    if x[i][0] - x[i-1][0] < 3600:
+                    if x[i].timestamp - x[i-1].timestamp < 3600:
                         x.pop(i)
                     else:
                         i += 1
         return r
+
+    def distinct_display_names(self, type, prefix, limit=25):
+        """Autocomplete helper: distinct display names for an entity type whose
+        name starts with `prefix` (case-insensitive). Empty prefix returns an
+        arbitrary `limit` of them. `limit` enforces Discord's 25-choice cap."""
+        table = _TABLE_BY_TYPE.get(type)
+        if table is None:
+            return []
+        if prefix:
+            rows = self.conn.execute(
+                f'SELECT DISTINCT display_name FROM {table} '
+                f'WHERE display_name LIKE ? || "%" COLLATE NOCASE LIMIT ?',
+                (prefix, limit)
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                f'SELECT DISTINCT display_name FROM {table} LIMIT ?', (limit,)
+            ).fetchall()
+        return [x[0] for x in rows]
 
     def get_top(self, type, place, cnt):
         table = _TABLE_BY_TYPE.get(type)

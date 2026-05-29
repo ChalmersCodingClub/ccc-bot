@@ -185,23 +185,39 @@ jobs. Per-problem `EntityGone` (404, retired) is logged and doesn't bump
 `last_seen_alive` (decays after 10 days off the listing); other per-problem
 errors are logged and the rotation continues.
 
-## Bot (`main.py`)
+## Bot (`main.py` + `kattis_cmd.py` + `plot.py`)
 
-Prefix `$`, plus one slash command. Commands:
-- `$kattis [user|uni|country] [names...] [top=...] [score|rank|...] [global|swe|chalmers] [days=N] [log] [nozoom] [legend|nolegend] [ignore-not-found]`
-  — the main graphing command. Parses a loose grammar into matplotlib plots.
-  Calls `kattis_conn.history()` and `get_top()`.
-- `$setname` / `$whoami` / `$forgetme` — map a Discord ID to a Kattis display
-  name (`db/user.db`, `realname` table). `$kattis me` / `@mention` resolve through it.
-- `/track-user shortname:<slug>` — slash command. Validates the user exists on
-  Kattis (`scrape_user` → `EntityGone` on 404), sets `tracked=1`, writes an
-  initial observation. Ephemeral responses. Slash commands are guild-synced in
-  `on_ready` (guarded by `_synced` flag against reconnects).
+**Slash-only** (the legacy `$`-prefix commands were removed; `message_content`
+intent is off). Three layers for the graphing command:
+- `plot.py` — **pure** render layer. `Metric`/`Scope` enums, `PlotRequest`
+  dataclass, `render(req, series) -> PNG bytes`. Uses the OO Matplotlib
+  `Figure` API (NOT global `pyplot`) because rendering runs in
+  `asyncio.to_thread`. Offline-testable. Raises `ValueError` on `log`+`nozoom`.
+- `kattis_cmd.py` — the `/kattis` `app_commands.Group` with **subcommands by
+  type**: `/kattis user|uni|country`. Each exposes only its valid `metric`
+  choices (user: score/rank; uni: +num_users; country: +num_users/
+  num_affiliations) so the metric×type matrix is structural, not runtime.
+  Shared options: `names` (comma-separated, with autocomplete that completes
+  the last token via `distinct_display_names`), `scope`, `top`, `days`, `log`,
+  `nozoom`, `legend`; `user` also has a native `member:` picker. All three
+  subcommands delegate to `_run`. `setup(kattis_conn, user_conn)` wires the DB
+  handles. Empty input → caller's `/setname` (user) else global top-5.
+  Missing names → public "couldn't find: …" note alongside the graph; errors/
+  personal config are ephemeral.
+- `main.py` — wiring only. Registers the group, `/track-user`, and the
+  ephemeral `/setname` `/whoami` `/forgetme`. **Global** `tree.sync()` in
+  `on_ready` (guarded by `_synced`) so commands work in DMs as well as guilds
+  (global publishes can take ~1h to propagate the first time).
 
-`history(mintimestamp, type, names, place)` returns rows in the legacy
-6-tuple shape `(timestamp, rank, display_name, place/subdiv/num, affiliation/num, score)`
-so `main.py`'s unpacking is unchanged. When `place='all'` it merges contexts
-and dedups observations within 3600s (collapses the per-context duplicates).
+`history(mintimestamp, type, names, place)` returns
+`[(display_name, [HistoryRow, ...])]` where `HistoryRow` is a namedtuple
+`(timestamp, rank, display_name, score, num_users, num_affiliations)` (N/A
+fields are `None`), letting the plot loop pick a metric by attribute. Rows are
+sorted by `.timestamp`. When `place='all'` it merges contexts and dedups
+observations within 3600s (collapses the per-context duplicates).
+`distinct_display_names(type, prefix, limit)` backs autocomplete; the `*_obs`
+tables have a `display_name` index for it (and for the `history` `IN (...)`
+scan).
 
 ## Kattis HTML quirks (learned the hard way)
 - Tables are `<table class="table2 ">` (trailing space). They previously had
@@ -241,13 +257,10 @@ units' `ExecStart` points at `services/start*.sh`, so `chmod +x` those too.
 - **Slug-keyed bot reads** — migrate `history`/`get_top` and the `realname`
   table off display-name keying once the Kattis admin slug-dump lands. This
   fixes rename-breakage and duplicate-display-name conflation.
-- **Bot UX** — `/track-user` exists; a fuller tracking UI (list/untrack, track
-  by mention) could follow.
+- **Bot UX** — `/track-user` exists; a fuller tracking UI (list/untrack) could
+  follow. (The old `$kattis` parser and its latent bugs — multiple `=`,
+  non-numeric `top=`/`days=`, `<@!`-only mentions, `IN ()` — are gone: slash
+  typed params, choices, and the native `member:` picker replaced them.)
 - **Problem graphing in the bot** — the problem scraper stores `problem_*`
   time-series, but the bot has no read path / command to plot them yet
   (difficulty/submissions/verdict trends, toplists). To add later.
-- **Known latent bugs** (from an earlier review, not yet fixed; out of scope of
-  the rewrite): `$kattis` crashes on `arg.split('=')` with multiple `=`, on
-  non-numeric `top=`/`days=`, on empty quoted args; `<@!` mention prefix misses
-  modern `<@` mentions; empty `names` could hit `IN ()`. Harden with try/except
-  if revisiting the command parser.
