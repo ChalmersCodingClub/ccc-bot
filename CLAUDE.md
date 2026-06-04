@@ -160,12 +160,12 @@ isn't exactly `table2 `). `scrape_problem_list(page)` parses the `/problems`
 listing for `(slug, name)` pairs (name links are `/problems/<slug>` with no
 sub-path; statistics/language links have sub-paths and are ignored).
 
-### Mega-tie skip
-When a problem's best_scoring "All languages" list is a full-solve tie, Kattis
-emits `data-title="N users have solved this problem with a score of 100 (all
-languages)"`. We detect this and **skip the best_scoring toplist** (it's
-uninteresting); fastest/shortest are still stored. Binary problems have no
-best_scoring toplist at all, so it's naturally absent there too.
+### Empty toplists
+Any of the three toplist kinds may be absent or empty: `best_scoring` is not
+present at all on pass/fail problems; any kind's "All languages" (`_0`) block
+is left empty by Kattis when there's a tie (score-tie or time-tie). The parser
+scopes its table search to within the `_0` block, so absent/empty → `[]` with
+no bleed into per-language sections that follow.
 
 ### Rotation loop (`__main__.py`)
 1. **Discovery** (once per rotation): paginate `/problems?page=N` until a page

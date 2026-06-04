@@ -11,7 +11,6 @@ _H1_RE            = re.compile(r'<h1>\s*(.+?)\s*[—-]\s*Problem Statistics', re
 _DIFFICULTY_RE    = re.compile(r'difficulty_number-problem_view[^"]*">\s*([0-9.]+)(?:\s*-\s*([0-9.]+))?')
 _BREAKPOINTS_RE   = re.compile(r'data-breakpoints="([^"]*)"')
 _DONUT_RE         = re.compile(r'id="status-donut-data"[^>]*>\s*(\{.*?\})\s*</script>', re.S)
-_MEGATIE_RE       = re.compile(r'data-title="\d+ users have solved this problem with a score of \d+ \(all languages\)"')
 _SPAN_RE          = re.compile(r'<span>([^<]+)</span>')
 
 
@@ -58,11 +57,8 @@ class ProblemScraper(KattisHttpClient):
             d = json.loads(donut_m.group(1))
             verdicts = [(label, int(count)) for label, count in zip(d['labels'], d['data'])]
 
-        megatie = bool(_MEGATIE_RE.search(html))
         toplists = {}
         for kind in _TOPLIST_KINDS:
-            if kind == 'best_scoring' and megatie:
-                continue  # full-solve tie — uninteresting, skip
             rows = self._parse_toplist(html, kind)
             if rows:
                 toplists[kind] = rows
@@ -78,7 +74,6 @@ class ProblemScraper(KattisHttpClient):
             'breakpoints': breakpoints,
             'verdicts': verdicts,
             'toplists': toplists,
-            'megatie': megatie,
         }
 
     def _parse_scalars(self, html):
@@ -104,7 +99,11 @@ class ProblemScraper(KattisHttpClient):
         idx = html.find(f'id="toplist_{kind}_0"')
         if idx < 0:
             return []
-        tables = self.get_tables(html[idx:])
+        # Only scan within the _0 block; per-language sections follow it and
+        # must not bleed in when the all-languages table is absent (time-tie).
+        next_block = html.find(f'id="toplist_{kind}_', idx + 1)
+        end = next_block if next_block >= 0 else len(html)
+        tables = self.get_tables(html[idx:end])
         if not tables:
             return []
         out = []
