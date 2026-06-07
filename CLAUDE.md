@@ -48,21 +48,24 @@ The same user appears once per context per scrape; **score is identical across
 contexts, only rank differs** (rank is position within that ranklist).
 
 **Metadata table:**
-- `entities(kind, shortname, display_name, tracked, discover_users, discover_affiliations, observe_users, first_seen, last_seen_alive)` — PK `(kind, shortname)`.
+- `entities(kind, shortname, display_name, tracked, discover_users, discover_affiliations, observe_users, observe_affiliations, first_seen, last_seen_alive)` — PK `(kind, shortname)`.
   - `tracked` — sticky boolean, "I care about this entity." Set by: observation
     in a `context='global'` scrape, OR discovery scrape (`force_tracked`), OR
     manual `set_flags`. Consumed by the scraper to decide what to backstop.
     The qualifier is "I care", not literally top-100.
   - `discover_users` / `discover_affiliations` — flags that make the scraper
     enumerate an entity's sub-entities. Set manually via `set_flags`.
-  - `observe_users` — "scrape this country's/affiliation's user toplist into
-    `user_obs` (context = its slug), but **untracked**." Set manually via
-    `set_flags`. Unlike `discover_users` it writes user rows with
-    `force_tracked=False`, so the toplist users do **not** become tracked and
-    do **not** spawn per-user backstop jobs; for countries it also skips the
-    affiliations/subdivisions tables (no discovery, and avoids the missing-
-    `tables[2]` crash on subdivision-less countries). It is an **alternative**
-    to `discover_users` — set one or the other on a given entity, not both.
+  - `observe_users` / `observe_affiliations` — "scrape this country's user
+    toplist / affiliation (uni) aggregate list into `user_obs` / `affiliation_obs`
+    (context = its slug), but **untracked**." Set manually via `set_flags`.
+    Unlike `discover_*` they write rows with `force_tracked=False`, so the
+    sub-entities do **not** become tracked and do **not** spawn per-user
+    backstop jobs; the country observe path also never touches the subdivisions
+    table (no discovery, and avoids the missing-`tables[2]` crash on
+    subdivision-less countries). They are the no-backstop **alternative** to
+    `discover_*` — set the observe flags or the discover flags on a given
+    entity, not both. (`observe_users` also applies to an affiliation entity, to
+    grab its user toplist untracked; `observe_affiliations` is country-only.)
     Added via a guarded `ALTER TABLE` migration in `create_tables`.
   - `last_seen_alive` — last successful observation. Drives 10-day decay.
 
@@ -127,13 +130,14 @@ Each tick rebuilds the job list from `entities`:
 - **Discovery jobs**: for each `tracked` entity with `discover_users` or
   `discover_affiliations` set and alive (`last_seen_alive` within 10 days) —
   scrape its page, enumerate sub-entities, mark them `tracked` (`force_tracked`).
-- **Observe jobs**: for each alive entity with `observe_users` set —
-  scrape a country's/affiliation's user toplist into `user_obs` (context = its
-  slug) via the `track=False` path, **without** tracking those users (no
-  backstop fan-out) and, for countries, without touching affiliations/
-  subdivisions. Due-checked against `user_obs` for that context, same as a
-  discovery affiliation. (Gated on `observe_users` alone, independent of
-  `tracked`.)
+- **Observe jobs**: for each alive entity with `observe_users` and/or
+  `observe_affiliations` set — one `country-observe/<slug>` (or
+  `affiliation-users/<slug>`) job that scrapes the requested tables via the
+  `track=False` path into `user_obs`/`affiliation_obs` (context = its slug),
+  **without** tracking the sub-entities (no backstop fan-out) and without
+  touching subdivisions. Due-checked against the context's `user_obs` (or
+  `affiliation_obs` if only affiliations are observed). (Gated on the observe
+  flags alone, independent of `tracked`.)
 - **Per-user backstop jobs**: for each `tracked` alive user — scrape
   `/users/<slug>` to capture global rank/score. Only *fires* (is "due") when
   that user's `user_obs context='global'` is >24h stale, so users in
@@ -159,11 +163,12 @@ c.set_flags('affiliation', 'kth.se', tracked=1, discover_users=1)
 ```
 The next scraper tick picks it up — no restart, no code change.
 
-To collect a country's (or affiliation's) **user toplist without** tracking
-those users or running discovery, use `observe_users` instead — e.g. a national
-ranklist for Iceland:
+To collect a country's **user toplist and/or uni list without** tracking those
+sub-entities or running discovery, use the observe flags instead — e.g. a
+national ranklist + uni list for Iceland:
 ```python
-c.set_flags('country', 'ISL', observe_users=1)   # → user_obs context='ISL', untracked
+c.set_flags('country', 'ISL', observe_users=1, observe_affiliations=1)
+# → user_obs + affiliation_obs context='ISL', all untracked
 ```
 
 ## Problem scraper (`problem_scraper/`)

@@ -32,21 +32,26 @@ class Scraper(KattisHttpClient):
         rows = self.download_tables("https://open.kattis.com/ranklist/languages")[0]
         self.kattis_conn.add_language_rows(rows, 'global', self._ts(time))
 
-    def scrape_country(self, slug, context, time=None, track=True):
+    def scrape_country(self, slug, context, time=None, track=True,
+                       observe_users=False, observe_affiliations=False):
         """Scrape /countries/<slug>. With track=True (discovery): pull the
         affiliations, users and subdivisions tables and force_track them all —
         used for SWE and any country with discover_users/discover_affiliations.
-        With track=False (observe-only): write *only* the users toplist, with
-        force_tracked=False (no backstop fan-out), and skip the affiliation and
-        subdivision tables entirely (no discovery, and sidesteps the missing-
-        tables[2] crash on subdivision-less countries)."""
+        With track=False (observe-only): write the requested tables
+        (`observe_users` → users toplist, `observe_affiliations` → affiliation
+        aggregate list) with force_tracked=False (no backstop fan-out), and
+        never touch the subdivisions table (no discovery, and sidesteps the
+        missing-tables[2] crash on subdivision-less countries)."""
         tables = self.download_tables(f"https://open.kattis.com/countries/{slug}")
         ts = self._ts(time)
         if track:
             self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=True)
             self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=True)
             self.kattis_conn.add_subdivision_rows( tables[2], context, ts, country=slug, force_tracked=True)
-        else:
+            return
+        if observe_affiliations:
+            self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=False)
+        if observe_users:
             self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=False)
 
     def scrape_affiliation(self, slug, display_name, context, time=None, track=True):

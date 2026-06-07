@@ -54,6 +54,11 @@ class KattisDbConn:
         # asyncio.to_thread (worker thread). The SQLite file-level lock still
         # serializes writers across threads and processes.
         self.conn = sqlite3.connect(db_file, check_same_thread=False)
+        # Wait (don't fail) when another process holds the write lock. Without
+        # this, startup work like create_tables' ALTER-TABLE migrations can lose
+        # a race to the actively-writing scraper and raise "database is locked",
+        # silently skipping the migration. 30s comfortably covers a scrape write.
+        self.conn.execute('PRAGMA busy_timeout = 30000')
         self.create_tables()
 
     def create_tables(self):
@@ -124,16 +129,18 @@ class KattisDbConn:
             'discover_users        INTEGER DEFAULT 0,'
             'discover_affiliations INTEGER DEFAULT 0,'
             'observe_users         INTEGER DEFAULT 0,'
+            'observe_affiliations  INTEGER DEFAULT 0,'
             'first_seen            INTEGER,'
             'last_seen_alive       INTEGER,'
             'PRIMARY KEY (kind, shortname)'
             ')'
         )
-        # Migration for pre-existing DBs that predate the observe_users column.
+        # Migration for pre-existing DBs that predate the observe_* columns.
         # (No migration framework; mirrors the CREATE TABLE IF NOT EXISTS style.)
         entity_cols = [r[1] for r in self.conn.execute('PRAGMA table_info(entities)').fetchall()]
-        if 'observe_users' not in entity_cols:
-            self.conn.execute('ALTER TABLE entities ADD COLUMN observe_users INTEGER DEFAULT 0')
+        for col in ('observe_users', 'observe_affiliations'):
+            if col not in entity_cols:
+                self.conn.execute(f'ALTER TABLE entities ADD COLUMN {col} INTEGER DEFAULT 0')
 
         # ---- problem statistics (scraped by the problem_scraper service) ----
         # All time-series; no `context` column (problems aren't per-ranklist).
@@ -401,8 +408,9 @@ class KattisDbConn:
     def set_flags(self, kind, shortname, **flags):
         """Manually set entity flags. Creates the row if absent.
         Allowed flags: tracked, discover_users, discover_affiliations,
-        observe_users."""
-        allowed = {'tracked', 'discover_users', 'discover_affiliations', 'observe_users'}
+        observe_users, observe_affiliations."""
+        allowed = {'tracked', 'discover_users', 'discover_affiliations',
+                   'observe_users', 'observe_affiliations'}
         bad = set(flags) - allowed
         if bad:
             raise ValueError(f'unsupported flags: {sorted(bad)}')

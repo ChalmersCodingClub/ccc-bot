@@ -88,21 +88,25 @@ def _build_dynamic_jobs(scraper, now_ts):
             jobs.append(Job(f'affiliation/{sn}', handler, affiliation_due(ctx), False))
         # subdivision / language not yet supported for discovery in 2b
 
-    # Observe-only: record an entity's user toplist into user_obs without
-    # tracking those users (no per-user backstop fan-out) and without
-    # discovering affiliations/subdivisions. Alternative to discover_users;
-    # gated on observe_users alone (independent of tracked).
+    # Observe-only: record an entity's user toplist (and, for countries, its
+    # affiliation aggregate list) into *_obs without tracking those sub-entities
+    # (no per-user backstop fan-out) and without discovering them. Alternative
+    # to discover_*; gated on observe_* alone (independent of tracked).
     observe_rows = conn.execute('''
-        SELECT kind, shortname, display_name FROM entities
-        WHERE observe_users=1
+        SELECT kind, shortname, display_name, observe_users, observe_affiliations
+        FROM entities
+        WHERE (observe_users=1 OR observe_affiliations=1)
           AND (last_seen_alive IS NULL OR last_seen_alive > ?)
     ''', (alive_since,)).fetchall()
 
-    for kind, sn, dn in observe_rows:
+    for kind, sn, dn, ou, oa in observe_rows:
         ctx = _context_for(kind, sn)
         if kind == 'country':
-            handler = (lambda s=sn, c=ctx: scraper.scrape_country(s, c, track=False))
-            jobs.append(Job(f'country-users/{sn}', handler, affiliation_due(ctx), False))
+            handler = (lambda s=sn, c=ctx, u=bool(ou), a=bool(oa):
+                       scraper.scrape_country(s, c, track=False, observe_users=u, observe_affiliations=a))
+            # Both tables share a timestamp; due-check whichever we write.
+            due = affiliation_due(ctx) if ou else country_due(ctx)
+            jobs.append(Job(f'country-observe/{sn}', handler, due, False))
         elif kind == 'affiliation':
             handler = (lambda s=sn, n=dn, c=ctx: scraper.scrape_affiliation(s, n, c, track=False))
             jobs.append(Job(f'affiliation-users/{sn}', handler, affiliation_due(ctx), False))
