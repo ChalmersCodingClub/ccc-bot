@@ -88,6 +88,25 @@ def _build_dynamic_jobs(scraper, now_ts):
             jobs.append(Job(f'affiliation/{sn}', handler, affiliation_due(ctx), False))
         # subdivision / language not yet supported for discovery in 2b
 
+    # Observe-only: record an entity's user toplist into user_obs without
+    # tracking those users (no per-user backstop fan-out) and without
+    # discovering affiliations/subdivisions. Alternative to discover_users;
+    # gated on observe_users alone (independent of tracked).
+    observe_rows = conn.execute('''
+        SELECT kind, shortname, display_name FROM entities
+        WHERE observe_users=1
+          AND (last_seen_alive IS NULL OR last_seen_alive > ?)
+    ''', (alive_since,)).fetchall()
+
+    for kind, sn, dn in observe_rows:
+        ctx = _context_for(kind, sn)
+        if kind == 'country':
+            handler = (lambda s=sn, c=ctx: scraper.scrape_country(s, c, track=False))
+            jobs.append(Job(f'country-users/{sn}', handler, affiliation_due(ctx), False))
+        elif kind == 'affiliation':
+            handler = (lambda s=sn, n=dn, c=ctx: scraper.scrape_affiliation(s, n, c, track=False))
+            jobs.append(Job(f'affiliation-users/{sn}', handler, affiliation_due(ctx), False))
+
     # Per-user backstop: tracked alive users.
     user_rows = conn.execute('''
         SELECT shortname, display_name FROM entities

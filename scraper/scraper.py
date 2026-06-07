@@ -32,22 +32,32 @@ class Scraper(KattisHttpClient):
         rows = self.download_tables("https://open.kattis.com/ranklist/languages")[0]
         self.kattis_conn.add_language_rows(rows, 'global', self._ts(time))
 
-    def scrape_country(self, slug, context, time=None):
-        """Discovery scrape of /countries/<slug>. Used for SWE today; any
-        country with discover_users/discover_affiliations gets one of these."""
+    def scrape_country(self, slug, context, time=None, track=True):
+        """Scrape /countries/<slug>. With track=True (discovery): pull the
+        affiliations, users and subdivisions tables and force_track them all —
+        used for SWE and any country with discover_users/discover_affiliations.
+        With track=False (observe-only): write *only* the users toplist, with
+        force_tracked=False (no backstop fan-out), and skip the affiliation and
+        subdivision tables entirely (no discovery, and sidesteps the missing-
+        tables[2] crash on subdivision-less countries)."""
         tables = self.download_tables(f"https://open.kattis.com/countries/{slug}")
         ts = self._ts(time)
-        self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=True)
-        self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=True)
-        self.kattis_conn.add_subdivision_rows( tables[2], context, ts, country=slug, force_tracked=True)
+        if track:
+            self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=True)
+            self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=True)
+            self.kattis_conn.add_subdivision_rows( tables[2], context, ts, country=slug, force_tracked=True)
+        else:
+            self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=False)
 
-    def scrape_affiliation(self, slug, display_name, context, time=None):
-        """Discovery scrape of /affiliations/<slug>. Used for chalmers today;
-        any affiliation with discover_users gets one of these."""
+    def scrape_affiliation(self, slug, display_name, context, time=None, track=True):
+        """Scrape /affiliations/<slug>. track=True (discovery): force_track the
+        users — used for chalmers and any affiliation with discover_users.
+        track=False (observe-only): record the users toplist without tracking
+        them (no backstop fan-out)."""
         rows = self.download_tables(f"https://open.kattis.com/affiliations/{slug}")[0]
         for r in rows:
             r.insert(3, (display_name, f"affiliations/{slug}"))
-        self.kattis_conn.add_user_rows(rows, context, self._ts(time), force_tracked=True)
+        self.kattis_conn.add_user_rows(rows, context, self._ts(time), force_tracked=track)
 
     # Backwards-compatible aliases for tests / phase-2a callsites:
     def scrape_swe(self, time=None):

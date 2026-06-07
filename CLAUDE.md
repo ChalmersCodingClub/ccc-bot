@@ -48,13 +48,22 @@ The same user appears once per context per scrape; **score is identical across
 contexts, only rank differs** (rank is position within that ranklist).
 
 **Metadata table:**
-- `entities(kind, shortname, display_name, tracked, discover_users, discover_affiliations, first_seen, last_seen_alive)` — PK `(kind, shortname)`.
+- `entities(kind, shortname, display_name, tracked, discover_users, discover_affiliations, observe_users, first_seen, last_seen_alive)` — PK `(kind, shortname)`.
   - `tracked` — sticky boolean, "I care about this entity." Set by: observation
     in a `context='global'` scrape, OR discovery scrape (`force_tracked`), OR
     manual `set_flags`. Consumed by the scraper to decide what to backstop.
     The qualifier is "I care", not literally top-100.
   - `discover_users` / `discover_affiliations` — flags that make the scraper
     enumerate an entity's sub-entities. Set manually via `set_flags`.
+  - `observe_users` — "scrape this country's/affiliation's user toplist into
+    `user_obs` (context = its slug), but **untracked**." Set manually via
+    `set_flags`. Unlike `discover_users` it writes user rows with
+    `force_tracked=False`, so the toplist users do **not** become tracked and
+    do **not** spawn per-user backstop jobs; for countries it also skips the
+    affiliations/subdivisions tables (no discovery, and avoids the missing-
+    `tables[2]` crash on subdivision-less countries). It is an **alternative**
+    to `discover_users` — set one or the other on a given entity, not both.
+    Added via a guarded `ALTER TABLE` migration in `create_tables`.
   - `last_seen_alive` — last successful observation. Drives 10-day decay.
 
 ### Problem statistics tables
@@ -118,6 +127,13 @@ Each tick rebuilds the job list from `entities`:
 - **Discovery jobs**: for each `tracked` entity with `discover_users` or
   `discover_affiliations` set and alive (`last_seen_alive` within 10 days) —
   scrape its page, enumerate sub-entities, mark them `tracked` (`force_tracked`).
+- **Observe jobs**: for each alive entity with `observe_users` set —
+  scrape a country's/affiliation's user toplist into `user_obs` (context = its
+  slug) via the `track=False` path, **without** tracking those users (no
+  backstop fan-out) and, for countries, without touching affiliations/
+  subdivisions. Due-checked against `user_obs` for that context, same as a
+  discovery affiliation. (Gated on `observe_users` alone, independent of
+  `tracked`.)
 - **Per-user backstop jobs**: for each `tracked` alive user — scrape
   `/users/<slug>` to capture global rank/score. Only *fires* (is "due") when
   that user's `user_obs context='global'` is >24h stale, so users in
@@ -142,6 +158,13 @@ c = KattisDbConn('db/kattis.db')
 c.set_flags('affiliation', 'kth.se', tracked=1, discover_users=1)
 ```
 The next scraper tick picks it up — no restart, no code change.
+
+To collect a country's (or affiliation's) **user toplist without** tracking
+those users or running discovery, use `observe_users` instead — e.g. a national
+ranklist for Iceland:
+```python
+c.set_flags('country', 'ISL', observe_users=1)   # → user_obs context='ISL', untracked
+```
 
 ## Problem scraper (`problem_scraper/`)
 
@@ -274,3 +297,35 @@ units' `ExecStart` points at `services/start*.sh`, so `chmod +x` those too.
 - **Problem graphing in the bot** — the problem scraper stores `problem_*`
   time-series, but the bot has no read path / command to plot them yet
   (difficulty/submissions/verdict trends, toplists). To add later.
+  - ⚠️ **"Current toplist" must key off `problem_obs`, NOT `MAX(problem_toplist.timestamp)`.**
+    A tie (score-tie or time-tie) makes Kattis leave the "All languages" list
+    empty, so that scrape writes **zero** `problem_toplist` rows for that kind.
+    Taking `MAX(timestamp)` over `problem_toplist` therefore resurrects the last
+    *non-empty* (possibly long-stale) snapshot and shows a user as still holding
+    e.g. the fastest solution after they've been tied out of it. Correct pattern:
+    per problem take `latest = MAX(timestamp) FROM problem_obs` (every scrape
+    writes `problem_obs`), then read `problem_toplist` rows `WHERE timestamp =
+    latest` — absent rows mean genuinely empty/tied (no holder), not stale.
+    This bug previously existed in the parser too (empty all-languages `_0` block
+    bled the first per-language table in as rank 1 — see "Empty toplists"); fixed,
+    and the contaminated history was deleted on 2026-06-05 (one latest snapshot
+    per problem retained), but the read-side pitfall above is independent and is
+    still latent for whoever adds the bot command.
+  - ⚠️ **"Fastest untied" means rank-1 runtime STRICTLY lower than rank 2 — not
+    just "appears at rank 1".** Kattis only blanks the all-languages list on a
+    *big* runtime tie; a small tie (2–3 users at the same displayed runtime, e.g.
+    several `0.00`s) is still listed, ordered by submission date. So a populated
+    list does NOT imply an untied #1. To attribute a fastest title, require
+    `value(rank1) < value(rank2)` (or rank 2 absent). Counting bare rank-1 rows
+    overcounts: Vincent Lagerros was 706 by bare-rank-1 vs 566 truly-untied; the
+    140-gap is all shared-runtime ties. (Same idea applies to `shortest` —
+    byte-length ties — if you ever attribute "shortest" titles.)
+  - ⚠️ **A problem that transitions from having a toplist to NOT having one must
+    drop its attribution entirely — never carry the old holder forward.** If a
+    problem stops showing a top list (it had rank-1..N rows at an earlier scrape,
+    then a later scrape has none — newly tied/blanked, or the section vanished),
+    the keep-latest-snapshot rule already handles this *as long as* you key off
+    `problem_obs` (previous warning): the latest `problem_obs` timestamp has zero
+    matching `problem_toplist` rows, so the user is correctly attributed nothing.
+    Do NOT fall back to an earlier snapshot to "fill in" a now-empty list — an
+    absent current toplist is a real state (no untied holder), not missing data.

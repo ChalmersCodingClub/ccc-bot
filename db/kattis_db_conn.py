@@ -123,11 +123,17 @@ class KattisDbConn:
             'tracked               INTEGER DEFAULT 0,'
             'discover_users        INTEGER DEFAULT 0,'
             'discover_affiliations INTEGER DEFAULT 0,'
+            'observe_users         INTEGER DEFAULT 0,'
             'first_seen            INTEGER,'
             'last_seen_alive       INTEGER,'
             'PRIMARY KEY (kind, shortname)'
             ')'
         )
+        # Migration for pre-existing DBs that predate the observe_users column.
+        # (No migration framework; mirrors the CREATE TABLE IF NOT EXISTS style.)
+        entity_cols = [r[1] for r in self.conn.execute('PRAGMA table_info(entities)').fetchall()]
+        if 'observe_users' not in entity_cols:
+            self.conn.execute('ALTER TABLE entities ADD COLUMN observe_users INTEGER DEFAULT 0')
 
         # ---- problem statistics (scraped by the problem_scraper service) ----
         # All time-series; no `context` column (problems aren't per-ranklist).
@@ -394,8 +400,9 @@ class KattisDbConn:
 
     def set_flags(self, kind, shortname, **flags):
         """Manually set entity flags. Creates the row if absent.
-        Allowed flags: tracked, discover_users, discover_affiliations."""
-        allowed = {'tracked', 'discover_users', 'discover_affiliations'}
+        Allowed flags: tracked, discover_users, discover_affiliations,
+        observe_users."""
+        allowed = {'tracked', 'discover_users', 'discover_affiliations', 'observe_users'}
         bad = set(flags) - allowed
         if bad:
             raise ValueError(f'unsupported flags: {sorted(bad)}')
