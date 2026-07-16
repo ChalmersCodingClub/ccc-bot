@@ -202,9 +202,9 @@ no bleed into per-language sections that follow.
    are not stored (partial info, messy).
 2. **Observation**: snapshot `problems_to_scrape(alive_since)` (all tracked,
    alive problems, **stalest-first**) and scrape each detail page, sleeping
-   `POLITE_INTERVAL_SECONDS` (60s) between. Snapshotting once per rotation (vs
+   `POLITE_INTERVAL_SECONDS` (30s) between. Snapshotting once per rotation (vs
    re-picking the stalest each step) avoids getting stuck re-fetching a problem
-   whose scrape failed. At ~60s/problem a full rotation ≈ 4–6 days. Stalest-
+   whose scrape failed. At ~30s/problem a full rotation ≈ 2–3 days. Stalest-
    first ordering keeps coverage even across restarts.
 
 **Failure handling**: list-discovery failures use a consecutive-fail counter →

@@ -82,8 +82,15 @@ class Scraper(KattisHttpClient):
                 f"could not parse user page for {shortname}: "
                 f"rank={bool(rank_m)} score={bool(score_m)} name={bool(name_m)}"
             )
-        rank = int(rank_m.group(1).replace(',', ''))
-        score = float(score_m.group(1).replace(',', ''))
+        # A user with no ranked submissions shows "-" for rank/score. Record
+        # the observation with NULLs rather than crashing — otherwise the write
+        # never happens, the user stays perpetually backstop-"due", and the
+        # scheduler wastes a slot retrying them every tick.
+        def _num(txt, cast):
+            txt = txt.strip()
+            return None if txt in ('-', '', 'N/A') else cast(txt.replace(',', ''))
+        rank = _num(rank_m.group(1), int)
+        score = _num(score_m.group(1), float)
         display_name = name_m.group(1).strip()
         self.kattis_conn.add_user_backstop(shortname, display_name, rank, score, self._ts(time))
 

@@ -10,6 +10,12 @@ MIN_INTERVAL_SECONDS = 30               # polite floor
 JOB_DUE_AFTER_SECONDS = 24 * 3600
 ALIVE_WINDOW_SECONDS = 10 * 86400       # decay after 10 days of silence
 MAX_FIXED_JOB_FAILS = 10
+# A full ranklist scrape writes many rows under one timestamp; the per-user
+# backstop writes *single* context='global' rows into user_obs. The fixed-job
+# due-check must ignore those single-row writes, else backstop activity keeps
+# the global_users due-check perpetually "fresh" and the top-100 ranklist job
+# never runs. (This deadlock silently stalled global_users 2026-05-23..07-11.)
+FIXED_SCRAPE_MIN_ROWS = 10
 
 # Context name used for back-compat discovery scrapes. New discovery targets
 # (e.g., country=USA, affiliation=kth.se) use their shortname as the context.
@@ -29,10 +35,16 @@ def _context_for(kind, shortname):
 def _build_fixed_jobs(scraper):
     conn = scraper.kattis_conn.conn
 
-    def due(table, context):
+    def due(table, context, min_rows=FIXED_SCRAPE_MIN_ROWS):
+        # Only count *batch* scrapes (a full ranklist shares one timestamp
+        # across many rows); single-row backstop writes are excluded by the
+        # HAVING floor so they can't mask this job's staleness.
         def check(now_ts):
             row = conn.execute(
-                f'SELECT MAX(timestamp) FROM {table} WHERE context=?', (context,)
+                f'SELECT MAX(timestamp) FROM '
+                f'(SELECT timestamp FROM {table} WHERE context=? '
+                f' GROUP BY timestamp HAVING COUNT(*) >= ?)',
+                (context, min_rows)
             ).fetchone()
             t = row[0]
             return t is None or t < now_ts - JOB_DUE_AFTER_SECONDS
@@ -111,11 +123,19 @@ def _build_dynamic_jobs(scraper, now_ts):
             handler = (lambda s=sn, n=dn, c=ctx: scraper.scrape_affiliation(s, n, c, track=False))
             jobs.append(Job(f'affiliation-users/{sn}', handler, affiliation_due(ctx), False))
 
-    # Per-user backstop: tracked alive users.
+    # Per-user backstop: tracked alive users, stalest global obs first. The
+    # scheduler runs the first *due* job each tick, so an arbitrary order lets
+    # the front of the list be re-serviced every 24h before the tail is ever
+    # reached — permanently starving it. Ordering by staleness (never-scraped
+    # first, then oldest) guarantees the most-overdue users get priority.
     user_rows = conn.execute('''
-        SELECT shortname, display_name FROM entities
-        WHERE kind='user' AND tracked=1
-          AND (last_seen_alive IS NULL OR last_seen_alive > ?)
+        SELECT e.shortname, e.display_name,
+               (SELECT MAX(o.timestamp) FROM user_obs o
+                 WHERE o.shortname = e.shortname AND o.context='global') AS last_global
+        FROM entities e
+        WHERE e.kind='user' AND e.tracked=1
+          AND (e.last_seen_alive IS NULL OR e.last_seen_alive > ?)
+        ORDER BY last_global IS NOT NULL, last_global ASC
     ''', (alive_since,)).fetchall()
 
     def user_backstop_due(sn):
@@ -127,7 +147,7 @@ def _build_dynamic_jobs(scraper, now_ts):
             return t is None or t < now_ts - JOB_DUE_AFTER_SECONDS
         return check
 
-    for sn, dn in user_rows:
+    for sn, dn, _last_global in user_rows:
         handler = (lambda s=sn: scraper.scrape_user(s))
         jobs.append(Job(f'user/{sn}', handler, user_backstop_due(sn), False))
 
