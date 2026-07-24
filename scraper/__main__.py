@@ -123,19 +123,14 @@ def _build_dynamic_jobs(scraper, now_ts):
             handler = (lambda s=sn, n=dn, c=ctx: scraper.scrape_affiliation(s, n, c, track=False))
             jobs.append(Job(f'affiliation-users/{sn}', handler, affiliation_due(ctx), False))
 
-    # Per-user backstop: tracked alive users, stalest global obs first. The
-    # scheduler runs the first *due* job each tick, so an arbitrary order lets
-    # the front of the list be re-serviced every 24h before the tail is ever
-    # reached — permanently starving it. Ordering by staleness (never-scraped
-    # first, then oldest) guarantees the most-overdue users get priority.
+    # Per-user backstop: tracked alive users. Order is irrelevant — main()
+    # round-robins the dynamic jobs by name, so fairness doesn't depend on the
+    # list order here (and a stalest-first order would sort a permanently-due
+    # 404 user to the front, which is exactly what we don't want).
     user_rows = conn.execute('''
-        SELECT e.shortname, e.display_name,
-               (SELECT MAX(o.timestamp) FROM user_obs o
-                 WHERE o.shortname = e.shortname AND o.context='global') AS last_global
-        FROM entities e
-        WHERE e.kind='user' AND e.tracked=1
-          AND (e.last_seen_alive IS NULL OR e.last_seen_alive > ?)
-        ORDER BY last_global IS NOT NULL, last_global ASC
+        SELECT shortname, display_name FROM entities
+        WHERE kind='user' AND tracked=1
+          AND (last_seen_alive IS NULL OR last_seen_alive > ?)
     ''', (alive_since,)).fetchall()
 
     def user_backstop_due(sn):
@@ -147,7 +142,7 @@ def _build_dynamic_jobs(scraper, now_ts):
             return t is None or t < now_ts - JOB_DUE_AFTER_SECONDS
         return check
 
-    for sn, dn, _last_global in user_rows:
+    for sn, dn in user_rows:
         handler = (lambda s=sn: scraper.scrape_user(s))
         jobs.append(Job(f'user/{sn}', handler, user_backstop_due(sn), False))
 
@@ -158,15 +153,31 @@ def build_jobs(scraper, now_ts):
     return _build_fixed_jobs(scraper) + _build_dynamic_jobs(scraper, now_ts)
 
 
-def pick_due_job(jobs, now_ts):
+def pick_job(jobs, is_due, last_dyn_name):
+    """Choose the next job to run.
+
+    Fixed ranklist jobs keep priority (they are due only ~once/24h and the
+    fixed-fail counter in main() bounces the process if one wedges). Dynamic
+    jobs (backstop/discovery/observe) are scheduled round-robin by their stable,
+    unique name so that a single job whose due-check never clears — e.g. a 404
+    user (EntityGone) that never records an observation — cannot monopolize the
+    'one job per tick' loop and starve everything after it.
+
+    `is_due` is a {name: bool} map evaluated once per tick. `last_dyn_name` is
+    the name of the dynamic job run last tick (the round-robin cursor).
+    """
     for j in jobs:
-        if j.is_due(now_ts):
+        if j.is_fixed and is_due[j.name]:
             return j
-    return None
-
-
-def count_due(jobs, now_ts):
-    return sum(1 for j in jobs if j.is_due(now_ts))
+    dyn = sorted((j for j in jobs if not j.is_fixed and is_due[j.name]),
+                 key=lambda j: j.name)
+    if not dyn:
+        return None
+    if last_dyn_name is not None:
+        for j in dyn:
+            if j.name > last_dyn_name:
+                return j
+    return dyn[0]  # first run, or wrap around past the last name
 
 
 def compute_interval(n_due):
@@ -178,15 +189,23 @@ def compute_interval(n_due):
 def main():
     scraper = Scraper()
     fixed_fails = {}
+    last_dyn_name = None  # round-robin cursor over dynamic jobs
 
     while True:
         now_ts = int(time.time())
         jobs = build_jobs(scraper, now_ts)
-        job = pick_due_job(jobs, now_ts)
+        is_due = {j.name: j.is_due(now_ts) for j in jobs}
+        job = pick_job(jobs, is_due, last_dyn_name)
 
         if job is None:
             time.sleep(DEFAULT_INTERVAL_SECONDS)
             continue
+
+        # Advance the cursor before running, so a job that fails is still
+        # stepped past next tick — this is what stops an unsatisfiable job
+        # (e.g. a 404 user) from monopolizing the loop.
+        if not job.is_fixed:
+            last_dyn_name = job.name
 
         print(f'scraping {job.name}...', flush=True)
         try:
@@ -209,7 +228,7 @@ def main():
                     sys.exit(1)
             # else: dynamic job, transient; just continue. Next tick may retry.
 
-        n_due = count_due(jobs, int(time.time()))
+        n_due = sum(is_due.values())
         time.sleep(compute_interval(n_due))
 
 

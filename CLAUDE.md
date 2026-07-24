@@ -144,15 +144,49 @@ Each tick rebuilds the job list from `entities`:
   `/ranklist` top-100 are skipped (the global job already covers them).
 
 A job is "due" when its target table's latest matching timestamp is >24h old.
-Each tick runs the first due job, then sleeps an **adaptive interval**:
-`max(30, min(600, 86400 // n_due))` — fast enough to cover everyone within 24h,
-30s polite floor, 600s ceiling when little is due.
+Each tick evaluates every job's due-check **once**, into a `{name: bool}` map
+(`is_due`) reused for both the pick and the `n_due` count — one DB query per job
+per tick, no second pass. Don't reintroduce a staleness `ORDER BY` in
+`_build_dynamic_jobs`: it adds a correlated `MAX(timestamp)` scan per entity
+(`user_obs` has no `shortname` index) and, worse, see the ordering note below.
+
+`pick_job(jobs, is_due, last_dyn_name)` then runs **one** job:
+- **Fixed jobs first**, in list order, if due.
+- **Dynamic jobs round-robin by name** — sorted by their stable unique name,
+  taking the first due name greater than `last_dyn_name` (the cursor), wrapping
+  to the first when past the end. The cursor is advanced *before* the handler
+  runs, so a job that throws is still stepped past.
+
+Round-robin (not stalest-first) because a job whose due-check can never clear —
+a 404 user, whose `EntityGone` means no observation is ever written — is
+permanently due. Under first-due-wins it monopolizes every tick and starves
+everything behind it, and a stalest-first order sorts exactly that job to the
+front. Round-robin caps a wedged job at one tick per rotation. Tradeoff: a job
+that comes due just *behind* the cursor waits for the wrap (≤ one rotation,
+~24h) instead of being prioritized; acceptable at 24h backstop granularity.
+⚠️ `last_dyn_name` is **in-memory only** — it resets to the start of the
+alphabet on every restart, so a crash-looping scraper re-serves the front of the
+list. Regression tests: `tests/test_scheduler.py` (pure, no DB/network; run
+`python3 tests/test_scheduler.py`). The wedge test only has teeth if the wedged
+job sorts *first* — it asserts that.
+
+Then sleep an **adaptive interval**: `max(30, min(600, 86400 // n_due))` — fast
+enough to cover everyone within 24h, 30s polite floor, 600s ceiling when little
+is due. `n_due` comes from the pre-run snapshot, so the just-run job still
+counts (interval marginally short; harmless).
 
 **Failure handling**: fixed jobs use a per-job counter and `sys.exit(1)` after
 10 consecutive fails (systemd restarts → loud signal for infra breakage).
 Dynamic jobs: `EntityGone` (404) is logged and does *not* bump
 `last_seen_alive` (entity decays after 10 silent days); other transient errors
 are logged and retried next tick. One bad entity never takes down the scraper.
+
+⚠️ The fixed-job counter only counts **exceptions**. A fixed scrape that
+*succeeds* but writes fewer than `FIXED_SCRAPE_MIN_ROWS` rows prints `ok`, never
+clears its own due-check, and — having absolute priority — takes every tick
+forever with the counter untouched and no `sys.exit`. Fixed jobs are deliberately
+exempt from the dynamic round-robin, so nothing else bounds this. Latent, not
+observed.
 
 ### Adding tracking targets
 Manual, via `KattisDbConn.set_flags(kind, shortname, **flags)`. Example:
