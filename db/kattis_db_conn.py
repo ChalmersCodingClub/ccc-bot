@@ -59,6 +59,17 @@ class KattisDbConn:
         # a race to the actively-writing scraper and raise "database is locked",
         # silently skipping the migration. 30s comfortably covers a scrape write.
         self.conn.execute('PRAGMA busy_timeout = 30000')
+        # WAL: readers don't block the writer and vice versa, which the three
+        # services (two scrapers + bot) otherwise hit constantly under the
+        # default `delete` journal — a writer needs an exclusive lock there and
+        # can't coexist with any reader, so busy_timeout alone still logged
+        # hundreds of "database is locked" a day. journal_mode is a *persistent*
+        # property of the file, but we set it on every open anyway: idempotent
+        # (no-op if already WAL), and it makes a fresh/restored/rebuilt DB
+        # correct by construction instead of relying on a one-shot manual pragma.
+        # NB: WAL adds -wal/-shm sidecar files next to the DB — see the backup
+        # note under Deployment in CLAUDE.md.
+        self.conn.execute('PRAGMA journal_mode = WAL')
         self.create_tables()
 
     def create_tables(self):

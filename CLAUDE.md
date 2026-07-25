@@ -316,6 +316,16 @@ via `systemctl daemon-reload` + `enable --now` → start services → tail
 verification lives at `~/temp/cccbot-backup`. Verify against it before handing
 off deploy commands.
 
+⚠️ **`db/kattis.db` runs in WAL mode** (`KattisDbConn.__init__` sets
+`PRAGMA journal_mode=WAL`), so committed data can live in a `db/kattis.db-wal`
+sidecar (plus `-shm`) that a hot copy of the main file alone would miss. The
+"backup `db/kattis.db`" step must therefore either **stop the services first**
+(a clean shutdown checkpoints the WAL into the main file) or run
+`PRAGMA wal_checkpoint(TRUNCATE)` before copying — otherwise copy all three
+`db/kattis.db*` files together. Since the runbook already stops services before
+backing up, a plain copy is safe there; just don't hot-copy only the main file.
+(`*.db*` in `.gitignore` already excludes the sidecars from git.)
+
 Unit files are **copied** into `/etc/systemd/system/`, not symlinked from the
 repo (so `systemctl enable services/*.service` fails — they already exist
 there). After any `.service` change, the deploy must `sudo cp services/*.service
