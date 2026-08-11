@@ -3,9 +3,39 @@ import re
 from .http_client import EntityGone, KattisHttpClient
 
 
-_USER_RANK_RE   = re.compile(r'<span class="info_label">Rank</span><span class="important_text">([^<]+)</span>')
-_USER_SCORE_RE  = re.compile(r'<span class="info_label">Score</span><span class="important_text">([^<]+)</span>')
+# `\s*` between the label and value spans is load-bearing: Kattis started
+# emitting whitespace/newlines between them on 2026-07-30, which silently broke
+# every per-user backstop scrape for 12 days (rank/score unmatched, name fine).
+# Don't re-anchor these as adjacent.
+_USER_RANK_RE   = re.compile(r'<span class="info_label">Rank</span>\s*<span class="important_text">([^<]+)</span>')
+_USER_SCORE_RE  = re.compile(r'<span class="info_label">Score</span>\s*<span class="important_text">([^<]+)</span>')
 _USER_NAME_RE   = re.compile(r'<span class="image_info-text-main[^"]*"[^>]*>([^<]+)</span>')
+
+
+def parse_user_page(html):
+    """Parse a /users/<slug> profile page -> (display_name, rank, score).
+
+    Pure function (offline-testable). Raises ValueError naming which fields
+    failed to match; the caller adds the slug for the log line.
+
+    A user with no ranked submissions shows "-" for rank/score -> None, so the
+    observation still gets written. Otherwise the write never happens, the user
+    stays perpetually backstop-"due", and the scheduler wastes a slot on them
+    every rotation.
+    """
+    rank_m  = _USER_RANK_RE.search(html)
+    score_m = _USER_SCORE_RE.search(html)
+    name_m  = _USER_NAME_RE.search(html)
+    if not (rank_m and score_m and name_m):
+        raise ValueError(
+            f"rank={bool(rank_m)} score={bool(score_m)} name={bool(name_m)}"
+        )
+
+    def _num(txt, cast):
+        txt = txt.strip()
+        return None if txt in ('-', '', 'N/A') else cast(txt.replace(',', ''))
+
+    return name_m.group(1).strip(), _num(rank_m.group(1), int), _num(score_m.group(1), float)
 
 
 class Scraper(KattisHttpClient):
@@ -74,24 +104,10 @@ class Scraper(KattisHttpClient):
     def scrape_user(self, shortname, time=None):
         """Per-user backstop: scrape /users/<slug> for current global rank+score."""
         html = self.download_html(f"https://open.kattis.com/users/{shortname}")
-        rank_m  = _USER_RANK_RE.search(html)
-        score_m = _USER_SCORE_RE.search(html)
-        name_m  = _USER_NAME_RE.search(html)
-        if not (rank_m and score_m and name_m):
-            raise RuntimeError(
-                f"could not parse user page for {shortname}: "
-                f"rank={bool(rank_m)} score={bool(score_m)} name={bool(name_m)}"
-            )
-        # A user with no ranked submissions shows "-" for rank/score. Record
-        # the observation with NULLs rather than crashing — otherwise the write
-        # never happens, the user stays perpetually backstop-"due", and the
-        # scheduler wastes a slot retrying them every tick.
-        def _num(txt, cast):
-            txt = txt.strip()
-            return None if txt in ('-', '', 'N/A') else cast(txt.replace(',', ''))
-        rank = _num(rank_m.group(1), int)
-        score = _num(score_m.group(1), float)
-        display_name = name_m.group(1).strip()
+        try:
+            display_name, rank, score = parse_user_page(html)
+        except ValueError as e:
+            raise RuntimeError(f"could not parse user page for {shortname}: {e}") from e
         self.kattis_conn.add_user_backstop(shortname, display_name, rank, score, self._ts(time))
 
     def scrape(self, time=None):
