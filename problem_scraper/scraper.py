@@ -5,7 +5,9 @@ import re
 from scraper.http_client import EntityGone, KattisHttpClient
 
 
-_TOPLIST_KINDS    = ('best_scoring', 'fastest', 'shortest')
+# DB `kind` -> Kattis HTML id stem (`toplist_<stem>_0`). Kattis renamed the
+# stems (were the same as the kinds) ~2026-09-29; the DB kinds stay unchanged.
+_TOPLIST_KINDS    = {'best_scoring': 'score', 'fastest': 'runtime', 'shortest': 'length'}
 _LISTING_LINK_RE  = re.compile(r'<a href="/problems/([a-z0-9]+)"\s*>([^<]+)</a>')
 _H1_RE            = re.compile(r'<h1>\s*(.+?)\s*[—-]\s*Problem Statistics', re.S)
 _DIFFICULTY_RE    = re.compile(r'difficulty_number-problem_view[^"]*">\s*([0-9.]+)(?:\s*-\s*([0-9.]+))?')
@@ -58,8 +60,8 @@ class ProblemScraper(KattisHttpClient):
             verdicts = [(label, int(count)) for label, count in zip(d['labels'], d['data'])]
 
         toplists = {}
-        for kind in _TOPLIST_KINDS:
-            rows = self._parse_toplist(html, kind)
+        for kind, stem in _TOPLIST_KINDS.items():
+            rows = self._parse_toplist(html, stem)
             if rows:
                 toplists[kind] = rows
 
@@ -95,13 +97,13 @@ class ProblemScraper(KattisHttpClient):
             'full_solves': g('Full solves'),
         }
 
-    def _parse_toplist(self, html, kind):
-        idx = html.find(f'id="toplist_{kind}_0"')
+    def _parse_toplist(self, html, stem):
+        idx = html.find(f'id="toplist_{stem}_0"')
         if idx < 0:
             return []
         # Only scan within the _0 block; per-language sections follow it and
         # must not bleed in when the all-languages table is absent (time-tie).
-        next_block = html.find(f'id="toplist_{kind}_', idx + 1)
+        next_block = html.find(f'id="toplist_{stem}_', idx + 1)
         end = next_block if next_block >= 0 else len(html)
         tables = self.get_tables(html[idx:end])
         if not tables:

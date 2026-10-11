@@ -12,7 +12,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scraper.__main__ import Job, pick_job
+from scraper.__main__ import (Job, pick_job, compute_interval,
+                              DEFAULT_INTERVAL_SECONDS, JOB_DUE_AFTER_SECONDS)
 
 
 def _job(name, is_fixed=False):
@@ -97,6 +98,47 @@ def test_no_starvation_with_permanent_wedge():
             is_due[job.name] = False  # cleared for 24h
 
     assert served == set(real), f'starved: {set(real) - served}'
+
+
+def _simulate_max_staleness(interval_fn, n_jobs=600, n_never_due=100, days=12):
+    """Virtual-time replay of main()'s dynamic-job loop. Returns the worst
+    staleness (seconds since last serve) at serve time, after a warm-up.
+
+    `n_never_due` jobs model tracked users in the global top-100: the global
+    ranklist refreshes them, so they never come due but still count as jobs.
+    Everything starts due (the post-restart / post-backlog state).
+    """
+    names = sorted(f'user/{i:04d}' for i in range(n_jobs))
+    jobs = [_job(n) for n in names]
+    never_due = set(names[:n_never_due])
+    last = {n: -JOB_DUE_AFTER_SECONDS - 1 for n in names}
+    now, cursor, worst = 0, None, 0
+    while now < days * 86400:
+        is_due = {n: n not in never_due and last[n] < now - JOB_DUE_AFTER_SECONDS
+                  for n in names}
+        job = pick_job(jobs, is_due, cursor)
+        if job is None:
+            now += DEFAULT_INTERVAL_SECONDS
+            continue
+        cursor = job.name
+        if now > 4 * 86400:  # past warm-up / initial backlog
+            worst = max(worst, now - last[job.name])
+        last[job.name] = now
+        now += interval_fn(len(jobs), sum(is_due.values()))
+    return worst
+
+
+def test_steady_state_staleness_near_due_window():
+    """Every dynamic job must be re-scraped soon after it comes due (24h), not
+    a full round-robin pass later. Regression for pacing by the due count,
+    which settled at ~48h (chalmers/swe/country lists every 2 days)."""
+    worst = _simulate_max_staleness(lambda n_jobs, n_due: compute_interval(n_jobs))
+    assert worst < JOB_DUE_AFTER_SECONDS + 2 * 3600, f'{worst / 3600:.1f}h'
+
+    # Teeth: the old due-count pacing must fail this same bound.
+    old = _simulate_max_staleness(
+        lambda n_jobs, n_due: max(30, min(600, 86400 // n_due)))
+    assert old > JOB_DUE_AFTER_SECONDS + 12 * 3600, f'old {old / 3600:.1f}h'
 
 
 def _run_all():

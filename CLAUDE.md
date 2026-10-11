@@ -162,18 +162,25 @@ a 404 user, whose `EntityGone` means no observation is ever written — is
 permanently due. Under first-due-wins it monopolizes every tick and starves
 everything behind it, and a stalest-first order sorts exactly that job to the
 front. Round-robin caps a wedged job at one tick per rotation. Tradeoff: a job
-that comes due just *behind* the cursor waits for the wrap (≤ one rotation,
-~24h) instead of being prioritized; acceptable at 24h backstop granularity.
+that comes due just *behind* the cursor waits for the wrap (≤ one rotation)
+instead of being prioritized — which is why the interval below must keep a
+rotation much shorter than 24h.
 ⚠️ `last_dyn_name` is **in-memory only** — it resets to the start of the
 alphabet on every restart, so a crash-looping scraper re-serves the front of the
 list. Regression tests: `tests/test_scheduler.py` (pure, no DB/network; run
 `python3 tests/test_scheduler.py`). The wedge test only has teeth if the wedged
 job sorts *first* — it asserts that.
 
-Then sleep an **adaptive interval**: `max(30, min(600, 86400 // n_due))` — fast
-enough to cover everyone within 24h, 30s polite floor, 600s ceiling when little
-is due. `n_due` comes from the pre-run snapshot, so the just-run job still
-counts (interval marginally short; harmless).
+Then sleep an **adaptive interval**: `max(30, min(600, 43200 // n_jobs))` —
+paced by the **total** job count (due or not), so a pass over every job fits in
+12h, half the due window. 30s polite floor, 600s ceiling. Each job still runs at
+most once per 24h, so daily request volume is unchanged; only spacing shrinks.
+⚠️ Don't pace by the *due* count (`86400 // n_due`, the old formula): a pass
+over the due jobs then takes ~24h, and since a job only comes due 24h after it
+was served it waits another pass for the cursor → every dynamic job (chalmers,
+swe, uni/country lists, backstops) settled at **~48h** staleness (seen in prod
+until 2026-10-10). `test_steady_state_staleness_near_due_window` simulates the
+loop and asserts both the fix (~24h) and that the old formula fails (~48h).
 
 **Failure handling**: fixed jobs use a per-job counter and `sys.exit(1)` after
 10 consecutive fails (systemd restarts → loud signal for infra breakage).
@@ -216,7 +223,12 @@ Kattis problems as full time-series.
 difficulty range, partial-score breakpoints (from the `data-breakpoints`
 canvas attr — HTML-entity-encoded JSON), the verdict donut (from the
 `status-donut-data` `<script>` JSON), and the three all-languages toplists
-(the `toplist_<kind>_0` tables). The condensed summary table
+(the `toplist_<stem>_0` tables). ⚠️ HTML id stems ≠ DB kinds since Kattis
+renamed them ~2026-09-29: `score`→`best_scoring`, `runtime`→`fastest`,
+`length`→`shortest` (`_TOPLIST_KINDS` maps them). A rename fails *silently* —
+a missing `_0` block reads as "empty/tied", so `problem_toplist` just stops
+growing (went 11 days unnoticed). Test: `tests/test_problem_page.py`.
+The condensed summary table
 (`class="table2 condensed …"`) is parsed by label, not `get_tables` (its class
 isn't exactly `table2 `). `scrape_problem_list(page)` parses the `/problems`
 listing for `(slug, name)` pairs (name links are `/problems/<slug>` with no

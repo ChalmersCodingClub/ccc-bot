@@ -8,6 +8,7 @@ from .scraper import Scraper, EntityGone
 DEFAULT_INTERVAL_SECONDS = 600          # 10 min: ceiling when little is due
 MIN_INTERVAL_SECONDS = 30               # polite floor
 JOB_DUE_AFTER_SECONDS = 24 * 3600
+COVER_ALL_JOBS_SECONDS = JOB_DUE_AFTER_SECONDS // 2  # see compute_interval
 ALIVE_WINDOW_SECONDS = 10 * 86400       # decay after 10 days of silence
 MAX_FIXED_JOB_FAILS = 10
 # A full ranklist scrape writes many rows under one timestamp; the per-user
@@ -180,10 +181,22 @@ def pick_job(jobs, is_due, last_dyn_name):
     return dyn[0]  # first run, or wrap around past the last name
 
 
-def compute_interval(n_due):
-    if n_due <= 0:
+def compute_interval(n_jobs):
+    """Sleep between ticks, paced by the TOTAL job count, not the due count.
+
+    Pacing by the due count (86400 // n_due) made one round-robin pass over the
+    due jobs take ~24h; a job only comes due 24h after it was served, so it then
+    waited up to another full pass for the cursor -> every dynamic job settled
+    at ~48h staleness (observed 2026-09..10: chalmers/swe/country lists every
+    2 days). Pacing so that *every* job fits in half the due window keeps the
+    cursor ahead of the jobs coming due. Each job still runs at most once per
+    JOB_DUE_AFTER_SECONDS, so daily request volume is unchanged; only spacing
+    shrinks (and idle ticks just find nothing due and sleep the ceiling).
+    """
+    if n_jobs <= 0:
         return DEFAULT_INTERVAL_SECONDS
-    return max(MIN_INTERVAL_SECONDS, min(DEFAULT_INTERVAL_SECONDS, 86400 // n_due))
+    return max(MIN_INTERVAL_SECONDS,
+               min(DEFAULT_INTERVAL_SECONDS, COVER_ALL_JOBS_SECONDS // n_jobs))
 
 
 def main():
@@ -228,8 +241,7 @@ def main():
                     sys.exit(1)
             # else: dynamic job, transient; just continue. Next tick may retry.
 
-        n_due = sum(is_due.values())
-        time.sleep(compute_interval(n_due))
+        time.sleep(compute_interval(len(jobs)))
 
 
 if __name__ == '__main__':
