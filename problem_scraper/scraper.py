@@ -2,6 +2,7 @@ import html as htmllib
 import json
 import re
 
+from db.kattis_db_conn import ScrapeRejected, shortname_from_href
 from scraper.http_client import EntityGone, KattisHttpClient
 
 
@@ -59,11 +60,13 @@ class ProblemScraper(KattisHttpClient):
             d = json.loads(donut_m.group(1))
             verdicts = [(label, int(count)) for label, count in zip(d['labels'], d['data'])]
 
-        toplists = {}
+        toplists, rejected = {}, {}
         for kind, stem in _TOPLIST_KINDS.items():
-            rows = self._parse_toplist(html, stem)
+            rows, bad = self._parse_toplist(html, stem)
             if rows:
                 toplists[kind] = rows
+            if bad:
+                rejected[kind] = (bad, len(rows) + len(bad))
 
         return {
             'display_name': display_name,
@@ -76,6 +79,9 @@ class ProblemScraper(KattisHttpClient):
             'breakpoints': breakpoints,
             'verdicts': verdicts,
             'toplists': toplists,
+            # kind -> ([bad href, ...], total rows): toplist rows whose user
+            # link isn't a /users/<shortname> link. See scrape_problem.
+            'rejected': rejected,
         }
 
     def _parse_scalars(self, html):
@@ -100,23 +106,28 @@ class ProblemScraper(KattisHttpClient):
     def _parse_toplist(self, html, stem):
         idx = html.find(f'id="toplist_{stem}_0"')
         if idx < 0:
-            return []
+            return [], []
         # Only scan within the _0 block; per-language sections follow it and
         # must not bleed in when the all-languages table is absent (time-tie).
         next_block = html.find(f'id="toplist_{stem}_', idx + 1)
         end = next_block if next_block >= 0 else len(html)
         tables = self.get_tables(html[idx:end])
         if not tables:
-            return []
-        out = []
+            return [], []
+        out, bad = [], []
         for r in tables[0]:
             if len(r) < 5:
                 continue
             rank = int(r[0][0].replace(',', ''))
             user_text, user_slug = r[1]
-            user_sn = user_slug.removeprefix('users/') if user_slug else None
+            user_sn = shortname_from_href('user', user_slug)
+            # Kattis anonymizes some users: no link at all, text "Hidden user".
+            # They're kept with a NULL shortname; any other non-user link is bad.
+            if user_sn is None and not (user_slug is None and user_text == 'Hidden user'):
+                bad.append(user_slug)
+                continue
             out.append((rank, user_sn, user_text, _value(r[2][0]), r[3][0], r[4][0]))
-        return out
+        return out, bad
 
     def scrape_problem(self, shortname, time=None):
         """Scrape one problem's statistics page and write all problem_* rows.
@@ -124,6 +135,17 @@ class ProblemScraper(KattisHttpClient):
         html = self.download_html(f"https://open.kattis.com/problems/{shortname}/statistics")
         ts = self._ts(time)
         p = self.parse_problem(html)
+        if p['rejected']:
+            # Write nothing for this problem: a toplist missing rows (or written
+            # empty) would read as a real ranking / a tie. It stays stale and is
+            # retried next rotation. Same log prefixes as the ranklist writes.
+            for kind, (bad, total) in p['rejected'].items():
+                for href in bad:
+                    print(f'REJECT problem_toplist ctx={shortname}/{kind} href={href!r}', flush=True)
+                if len(bad) == total:
+                    print(f'REJECT-ALL problem_toplist ctx={shortname}/{kind} rows={total}', flush=True)
+            raise ScrapeRejected(f'{shortname}: toplist rows with bad user links: '
+                                 + ', '.join(f'{k} {len(b)}/{t}' for k, (b, t) in p['rejected'].items()))
         self.kattis_conn.add_problem_obs(
             shortname, p['display_name'], ts,
             p['difficulty_low'], p['difficulty_high'],

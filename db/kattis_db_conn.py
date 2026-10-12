@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from collections import namedtuple
 from datetime import datetime
@@ -16,6 +17,10 @@ def _num(s, conv):
     # Kattis formats numbers with thousands-separator commas, e.g. "9,509.5".
     return conv(s.replace(',', ''))
 
+
+# get_top ignores entities not observed in this long (matches the scraper's
+# 10-day ALIVE_WINDOW_SECONDS decay).
+TOP_FRESH_SECONDS = 10 * 86400
 
 # Maps the bot's user-facing type to the obs table that holds it.
 _TABLE_BY_TYPE = {
@@ -218,14 +223,19 @@ class KattisDbConn:
     # Row cells are (text, slug) tuples as returned by Scraper.parse_cell.
     # `slug` is the path of the first <a href> in the cell with the leading
     # slash stripped (e.g. 'users/joshua-andersson', 'countries/SWE/O'), or
-    # None if the cell had no anchor. Each helper strips the prefix it
-    # expects and stores just the entity identifier in `shortname`.
+    # None if the cell had no anchor. Each helper extracts the shortname with
+    # shortname_from_href; a row whose link isn't the expected entity link is
+    # rejected (logged, not written) rather than stored under a wrong
+    # shortname. See _log_write for the log lines statusd counts.
 
     def add_user_rows(self, rows, context, timestamp, force_tracked=False):
-        a = []
+        a, rejected = [], []
         for r in rows:
             name_text, name_slug = r[1]
-            sn = _strip(name_slug, 'users/')
+            sn = shortname_from_href('user', name_slug)
+            if sn is None:
+                rejected.append(name_slug)
+                continue
             a.append((
                 timestamp, context, sn,
                 name_text,                  # display_name
@@ -235,6 +245,7 @@ class KattisDbConn:
                 r[3][0],                    # affiliation
             ))
             self._touch_entity('user', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
+        _log_write('user_obs', context, rows, a, rejected)
         self.conn.executemany(
             'INSERT INTO user_obs (timestamp, context, shortname, display_name, rank, score, place, affiliation) '
             'VALUES (?,?,?,?,?,?,?,?)', a
@@ -242,10 +253,13 @@ class KattisDbConn:
         self.conn.commit()
 
     def add_affiliation_rows(self, rows, context, timestamp, force_tracked=False):
-        a = []
+        a, rejected = [], []
         for r in rows:
             name_text, name_slug = r[1]
-            sn = _strip(name_slug, 'affiliations/')
+            sn = shortname_from_href('affiliation', name_slug)
+            if sn is None:
+                rejected.append(name_slug)
+                continue
             a.append((
                 timestamp, context, sn,
                 name_text,                  # display_name
@@ -255,6 +269,7 @@ class KattisDbConn:
                 _num(r[3][0], int),         # num_users
             ))
             self._touch_entity('affiliation', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
+        _log_write('affiliation_obs', context, rows, a, rejected)
         self.conn.executemany(
             'INSERT INTO affiliation_obs (timestamp, context, shortname, display_name, rank, score, subdiv, num_users) '
             'VALUES (?,?,?,?,?,?,?,?)', a
@@ -262,10 +277,13 @@ class KattisDbConn:
         self.conn.commit()
 
     def add_country_rows(self, rows, context, timestamp, force_tracked=False):
-        a = []
+        a, rejected = [], []
         for r in rows:
             name_text, name_slug = r[1]
-            sn = _strip(name_slug, 'countries/')
+            sn = shortname_from_href('country', name_slug)
+            if sn is None:
+                rejected.append(name_slug)
+                continue
             a.append((
                 timestamp, context, sn,
                 name_text,                  # display_name
@@ -275,6 +293,7 @@ class KattisDbConn:
                 _num(r[3][0], int),         # num_affiliations
             ))
             self._touch_entity('country', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
+        _log_write('country_obs', context, rows, a, rejected)
         self.conn.executemany(
             'INSERT INTO country_obs (timestamp, context, shortname, display_name, rank, score, num_users, num_affiliations) '
             'VALUES (?,?,?,?,?,?,?,?)', a
@@ -282,10 +301,13 @@ class KattisDbConn:
         self.conn.commit()
 
     def add_subdivision_rows(self, rows, context, timestamp, country, force_tracked=False):
-        a = []
+        a, rejected = [], []
         for r in rows:
             name_text, name_slug = r[1]
-            sn = _strip(name_slug, 'countries/')
+            sn = shortname_from_href('subdivision', name_slug)
+            if sn is None:
+                rejected.append(name_slug)
+                continue
             a.append((
                 timestamp, context, sn,
                 name_text,                  # display_name
@@ -294,6 +316,7 @@ class KattisDbConn:
                 country,
             ))
             self._touch_entity('subdivision', sn, name_text, timestamp, qualifies_tracked=(context == 'global' or force_tracked))
+        _log_write('subdivision_obs', context, rows, a, rejected)
         self.conn.executemany(
             'INSERT INTO subdivision_obs (timestamp, context, shortname, display_name, rank, score, country) '
             'VALUES (?,?,?,?,?,?,?)', a
@@ -522,14 +545,24 @@ class KattisDbConn:
         # so the single latest timestamp is often one backstopped user — which
         # would make top-N return just that one. Per-entity-latest is robust to
         # that (and identical to the old behaviour for backstop-free types).
+        # Only entities still observed (latest row within TOP_FRESH_SECONDS of
+        # the context's newest row): a renamed user's old display name, or a
+        # 404'd account, otherwise keeps its last score here forever and takes
+        # a top-N slot with no recent history. Relative to the newest row, not
+        # now(), so a stalled scraper / old DB copy still yields a top list.
+        newest = self.conn.execute(
+            f'SELECT MAX(timestamp) FROM {table} WHERE context=?', (place,)
+        ).fetchone()[0]
+        if newest is None:
+            return []
         rows = self.conn.execute(
             f'SELECT u.display_name, u.score FROM {table} u '
             f'JOIN (SELECT display_name, MAX(timestamp) AS mt FROM {table} '
-            f'      WHERE context=? GROUP BY display_name) m '
+            f'      WHERE context=? GROUP BY display_name HAVING mt >= ?) m '
             f'  ON m.display_name=u.display_name AND m.mt=u.timestamp '
             f'WHERE u.context=? '
             f'ORDER BY u.score DESC LIMIT ?',
-            (place, place, cnt)
+            (place, newest - TOP_FRESH_SECONDS, place, cnt)
         ).fetchall()
         return [x[0] for x in rows]
 
@@ -541,6 +574,37 @@ class KattisDbConn:
             print()
 
 
-def _strip(slug, prefix):
-    if slug is None: return None
-    return slug.removeprefix(prefix)
+# A name cell's link (as parse_cell returns it: no leading slash) must be
+# exactly the entity's page. Anything else means Kattis changed its markup, and
+# guessing would store a wrong shortname, so the row is rejected instead.
+_SHORTNAME_RE = {
+    'user':        re.compile(r'users/([^/?#\s]+)'),
+    'affiliation': re.compile(r'affiliations/([^/?#\s]+)'),
+    'country':     re.compile(r'countries/([^/?#\s]+)'),
+    'subdivision': re.compile(r'countries/([^/?#\s]+/[^/?#\s]+)'),
+}
+
+
+def shortname_from_href(kind, href):
+    """'users/joshua-andersson' -> 'joshua-andersson'; None if `href` is not
+    exactly a `kind` entity link (or is None)."""
+    m = _SHORTNAME_RE[kind].fullmatch(href or '')
+    return m.group(1) if m else None
+
+
+class ScrapeRejected(Exception):
+    """Every row of a non-empty scraped table was rejected."""
+
+
+def _log_write(table, context, rows, written, rejected):
+    # Stable prefixes, counted by progolympstatus (cccbot.shortnames):
+    #   REJECT     one rejected row
+    #   WROTE      per-table summary
+    #   REJECT-ALL nothing usable in a non-empty table (also raised, so the job
+    #              counts as failed)
+    for href in rejected:
+        print(f'REJECT {table} ctx={context} href={href!r}', flush=True)
+    if rows and not written:
+        print(f'REJECT-ALL {table} ctx={context} rows={len(rows)}', flush=True)
+        raise ScrapeRejected(f'{table} ctx={context}: all {len(rows)} rows rejected')
+    print(f'WROTE {table} ctx={context} rows={len(written)} rejected={len(rejected)}', flush=True)

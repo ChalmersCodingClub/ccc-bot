@@ -104,6 +104,18 @@ stats page is also not scraped (by request — uninteresting).
   scraped cell. **Historical rows have `shortname=NULL`** — they predate
   capture. A one-shot backfill from a Kattis admin DB dump is planned but not
   done; do not assume historical rows have slugs.
+- The first link must be **exactly** the entity's page — `shortname_from_href`
+  (`db/kattis_db_conn.py`) accepts `users/<x>`, `affiliations/<x>`,
+  `countries/<X>`, `countries/<X>/<Y>` and nothing else (no sub-paths, query
+  strings or other kinds). A non-matching row is **rejected, not stored**:
+  logged as `REJECT <table> ctx=… href=…`, each ranklist write logs
+  `WROTE <table> ctx=… rows=N rejected=M`, and a non-empty table with nothing
+  usable logs `REJECT-ALL` and raises `ScrapeRejected` (job fails). Problem
+  toplists allow one exception — "Hidden user" cells have no link and keep
+  `user_shortname=NULL` — and any other bad user link rejects the **whole
+  problem scrape** (a toplist missing rows would read as a real ranking/tie).
+  progolympstatus counts these lines (`cccbot.shortnames`) and alerts on
+  Discord; **keep the prefixes stable**. Test: `tests/test_shortnames.py`.
 - Languages have no anchor/slug → `shortname = display_name` for them.
 - **The bot still queries by `display_name`, not slug** (see `history()`),
   because that's what users type and what historical rows have. Migrating the
@@ -319,14 +331,28 @@ scan).
   exists (a separate user score) but is intentionally **not** scraped.
 
 ## Deployment
-**Production deploys are run by the user, not by Claude.** Surface the command
-list (stop services → backup `db/kattis.db` → `git pull` →
-install/enable any **new** service unit, e.g. `cccbot-problem-scraper.service`
-via `systemctl daemon-reload` + `enable --now` → start services → tail
-`journalctl`); the user executes on the deploy host
-(`webmaster@po:/home/webmaster/ccc-bot`). A production-DB copy for local
-verification lives at `~/temp/cccbot-backup`. Verify against it before handing
-off deploy commands.
+**Claude may deploy to production itself** (`ssh po`, repo at
+`/home/webmaster/ccc-bot`). Code reaches po only via `git pull`, so a deploy
+still needs the change committed + pushed — which, as always, only happens when
+the user asks. Order: **back up the DB first** → `git pull` → install/enable
+any **new** service unit (`sudo cp services/*.service /etc/systemd/system/`,
+`daemon-reload`, `enable --now`) → `services/restart.sh` → tail `journalctl`
+and run `sudo python3 -B -m statusd once cccbot.` from `/opt/progolympstatus`.
+Read-only checks against the live DB need no copy: open it with
+`sqlite3.connect('file:db/kattis.db?mode=ro', uri=True)` on po.
+
+**Backups go to `ssh pobackup`** (`~/ccc-bot-backup/<YYYY-MM-DD>/`, zstd-compressed).
+po can't reach pobackup directly — relay through the local machine. Take a
+consistent snapshot on po with the SQLite online-backup API (safe while the
+services keep writing, WAL included), check it, then stream it across:
+```sh
+# on po: python3 sqlite3 src.backup(dst) of db/kattis.db + db/user.db into
+#        ~/temp/cccbot-snap/, then PRAGMA quick_check on the copies
+ssh po 'zstd -q -c -T0 ~/temp/cccbot-snap/kattis.db' | ssh pobackup 'cat > ~/ccc-bot-backup/<YYYY-MM-DD>/kattis.db.zst'
+```
+Compare `sha256sum` (po) against `zstd -d -c … | sha256sum` (pobackup), then
+delete the snapshot on po. (The ad-hoc `db/kattis.db.bak-*` files on po
+predate this and are not the backup location.)
 
 ⚠️ **`db/kattis.db` runs in WAL mode** (`KattisDbConn.__init__` sets
 `PRAGMA journal_mode=WAL`), so committed data can live in a `db/kattis.db-wal`
