@@ -82,13 +82,58 @@ async def _names_autocomplete(interaction: discord.Interaction, current: str):
     # Complete only the last comma-separated token, preserving what's typed.
     kind = interaction.command.name  # 'user' | 'uni' | 'country'
     head, sep, last = current.rpartition(",")
-    matches = kattis_conn.distinct_display_names(kind, last.strip(), 25)
+    # Off the loop: autocomplete has the same 3s deadline as the command.
+    matches = await asyncio.to_thread(
+        kattis_conn.distinct_display_names, kind, last.strip(), 25)
     out = []
     for m in matches:
         full = ((head + sep + " ") if sep else "") + m
         full = full[:100]  # Discord's Choice name/value cap
         out.append(Choice(name=full, value=full))
     return out
+
+
+def _collect(kind, requested, used_top, pscope, days, pmetric):
+    """Blocking kattis.db reads (get_top / history) -> (series, missing).
+
+    Runs in a worker thread: on the production DB these scans can exceed
+    Discord's 3s interaction deadline, which shows "The application did not
+    respond". Mutates `requested` (appends the top-N names)."""
+    if used_top > 0:
+        # Pull the top from the chosen scope so the names actually have rows in
+        # it; 'all' isn't a single ranklist, so fall back to the global list.
+        top_ctx = "global" if pscope is Scope.ALL else pscope.value
+        for n in (kattis_conn.get_top(kind, top_ctx, used_top) or []):
+            if n not in requested:
+                requested.append(n)
+    if not requested:
+        return [], []
+
+    mint = int((datetime.now() - timedelta(days=days)).timestamp())
+    hist = kattis_conn.history(mint, kind, requested, pscope.value)
+
+    attr = _METRIC_ATTR[pmetric]
+    series, missing = [], []
+    for name, rows in hist:
+        # Drop points where the metric is NULL (e.g. historical rows with no
+        # num_users) so None never reaches matplotlib.
+        pts = [(datetime.fromtimestamp(r.timestamp), getattr(r, attr))
+               for r in rows if getattr(r, attr) is not None]
+        if pts:
+            series.append((name, pts))
+        else:
+            missing.append(name)
+    return series, missing
+
+
+async def _fail_deferred(interaction, msg):
+    # We deferred publicly ("thinking…"); delete that placeholder so the error
+    # can go out ephemeral instead of as a public message.
+    try:
+        await interaction.delete_original_response()
+    except discord.HTTPException:
+        pass
+    await interaction.followup.send(msg, ephemeral=True)
 
 
 async def _run(interaction, kind, names, days, metric, scope, top, log, member=None):
@@ -103,6 +148,8 @@ async def _run(interaction, kind, names, days, metric, scope, top, log, member=N
 
     for tok in names.split(","):
         add(tok.strip())
+    # user_conn lookups are a tiny PK read (and that connection is same-thread
+    # only), so they stay on the loop, before the defer, with ephemeral errors.
     if member is not None:
         rn = user_conn.get_realname(str(member.id))
         if rn is None:
@@ -126,41 +173,25 @@ async def _run(interaction, kind, names, days, metric, scope, top, log, member=N
 
     pscope = _SCOPE[scope] if scope else _default_scope(kind, pmetric)
 
-    if used_top > 0:
-        # Pull the top from the chosen scope so the names actually have rows in
-        # it; 'all' isn't a single ranklist, so fall back to the global list.
-        top_ctx = "global" if pscope is Scope.ALL else pscope.value
-        for n in (kattis_conn.get_top(kind, top_ctx, used_top) or []):
-            add(n)
+    # Defer BEFORE touching kattis.db: Discord drops the interaction if it isn't
+    # acknowledged within 3s, and the reads below are not reliably that fast.
+    await interaction.response.defer(thinking=True)
+    try:
+        series, missing = await asyncio.to_thread(
+            _collect, kind, requested, used_top, pscope, days, pmetric)
+    except Exception as e:
+        await _fail_deferred(interaction, f"Failed to read history: {e}")
+        return
 
     if not requested:
-        await interaction.response.send_message(
-            "Nothing to plot — pass `names`, a `member`, or `top`.", ephemeral=True)
+        await _fail_deferred(
+            interaction, "Nothing to plot — pass `names`, a `member`, or `top`.")
         return
-
-    mint = int((datetime.now() - timedelta(days=days)).timestamp())
-    hist = kattis_conn.history(mint, kind, requested, pscope.value)
-
-    attr = _METRIC_ATTR[pmetric]
-    series, missing = [], []
-    for name, rows in hist:
-        # Drop points where the metric is NULL (e.g. historical rows with no
-        # num_users) so None never reaches matplotlib.
-        pts = [(datetime.fromtimestamp(r.timestamp), getattr(r, attr))
-               for r in rows if getattr(r, attr) is not None]
-        if pts:
-            series.append((name, pts))
-        else:
-            missing.append(name)
-
     if not series:
-        await interaction.response.send_message(
-            "Nothing to show — no data for: " + ", ".join(requested), ephemeral=True)
+        await _fail_deferred(
+            interaction, "Nothing to show — no data for: " + ", ".join(requested))
         return
 
-    # Public graph. DB reads above are fast (local sqlite); defer here so the
-    # CPU-bound render has the full 15-min followup window.
-    await interaction.response.defer(thinking=True)
     req = PlotRequest(metric=pmetric, scope=pscope, days=days, log=log, entity_kind=kind)
     try:
         png = await asyncio.to_thread(plot.render, req, series)
