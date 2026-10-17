@@ -36,6 +36,14 @@ shouldn't be coupled to the Discord event loop or bot reconnects.
 
 Schema managed by `db/kattis_db_conn.py:KattisDbConn`.
 
+**Writes are atomic.** Every write helper is `@_atomic` (no bare `commit()`);
+a scrape that writes several tables wraps them in `with conn.transaction():`,
+which commits only at the outermost level and rolls everything back on any
+exception (`scrape_problem`, `scrape_country`). Keep it that way: a
+`problem_obs` row committed without its toplists reads as "tied / no holder".
+Nesting is flat (no savepoints) — never swallow an exception inside an outer
+`transaction()` block. Test: `tests/test_write_atomicity.py`.
+
 **Observation tables** — one per entity kind, all time-series:
 - `user_obs(timestamp, context, shortname, display_name, rank, score, place, affiliation)`
 - `affiliation_obs(timestamp, context, shortname, display_name, rank, score, subdiv, num_users)`
@@ -194,7 +202,9 @@ swe, uni/country lists, backstops) settled at **~48h** staleness (seen in prod
 until 2026-10-10). `test_steady_state_staleness_near_due_window` simulates the
 loop and asserts both the fix (~24h) and that the old formula fails (~48h).
 
-**Failure handling**: fixed jobs use a per-job counter and `sys.exit(1)` after
+**Failure handling**: every HTTP request times out after
+`HTTP_TIMEOUT_SECONDS` (60s, `scraper/http_client.py`) — without it a stalled
+connection hangs a scraper forever with no exception. Fixed jobs use a per-job counter and `sys.exit(1)` after
 10 consecutive fails (systemd restarts → loud signal for infra breakage).
 Dynamic jobs: `EntityGone` (404) is logged and does *not* bump
 `last_seen_alive` (entity decays after 10 silent days); other transient errors

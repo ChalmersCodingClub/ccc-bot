@@ -146,14 +146,17 @@ class ProblemScraper(KattisHttpClient):
                     print(f'REJECT-ALL problem_toplist ctx={shortname}/{kind} rows={total}', flush=True)
             raise ScrapeRejected(f'{shortname}: toplist rows with bad user links: '
                                  + ', '.join(f'{k} {len(b)}/{t}' for k, (b, t) in p['rejected'].items()))
-        self.kattis_conn.add_problem_obs(
-            shortname, p['display_name'], ts,
-            p['difficulty_low'], p['difficulty_high'],
-            p['submissions'], p['accepted'], p['authors'], p['full_solves'],
-        )
-        if p['verdicts']:
-            self.kattis_conn.add_problem_verdicts(shortname, ts, p['verdicts'])
-        if p['breakpoints']:
-            self.kattis_conn.add_problem_partial_difficulty(shortname, ts, p['breakpoints'])
-        for kind, rows in p['toplists'].items():
-            self.kattis_conn.add_problem_toplist(shortname, ts, kind, rows)
+        # One transaction: a problem_obs row committed without its toplists
+        # would read as "no toplist = tied / no holder".
+        with self.kattis_conn.transaction():
+            self.kattis_conn.add_problem_obs(
+                shortname, p['display_name'], ts,
+                p['difficulty_low'], p['difficulty_high'],
+                p['submissions'], p['accepted'], p['authors'], p['full_solves'],
+            )
+            if p['verdicts']:
+                self.kattis_conn.add_problem_verdicts(shortname, ts, p['verdicts'])
+            if p['breakpoints']:
+                self.kattis_conn.add_problem_partial_difficulty(shortname, ts, p['breakpoints'])
+            for kind, rows in p['toplists'].items():
+                self.kattis_conn.add_problem_toplist(shortname, ts, kind, rows)

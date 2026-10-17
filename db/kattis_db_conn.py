@@ -1,5 +1,8 @@
+import contextlib
+import functools
 import re
 import sqlite3
+import threading
 from collections import namedtuple
 from datetime import datetime
 
@@ -53,6 +56,16 @@ def _allowed_contexts(type):
     return a
 
 
+def _atomic(method):
+    # Write helpers run inside transaction(): all-or-nothing on their own, and
+    # folded into the caller's transaction when one is open.
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.transaction():
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class KattisDbConn:
     def __init__(self, db_file):
         # check_same_thread=False so the bot can do scraper.scrape_user from
@@ -75,7 +88,35 @@ class KattisDbConn:
         # NB: WAL adds -wal/-shm sidecar files next to the DB — see the backup
         # note under Deployment in CLAUDE.md.
         self.conn.execute('PRAGMA journal_mode = WAL')
+        self._tx_lock = threading.RLock()
+        self._tx_depth = 0
         self.create_tables()
+
+    @contextlib.contextmanager
+    def transaction(self):
+        """Commit every write in the block atomically: on normal exit of the
+        OUTERMOST block, or roll all of it back if anything raises. Nests, so a
+        scrape spanning several @_atomic helpers (problem_obs + verdicts +
+        toplists) lands all-or-nothing — a half-written problem scrape would
+        otherwise read as "toplist empty = tied" (see CLAUDE.md). The RLock
+        serializes writers sharing this connection across threads (the bot's
+        /track-user scrapes in asyncio.to_thread workers).
+
+        Nesting is flat, not savepoints: an exception an inner block raises
+        must propagate out of the outer one, never be swallowed inside it."""
+        with self._tx_lock:
+            outer = self._tx_depth == 0
+            self._tx_depth += 1
+            try:
+                yield
+                if outer:
+                    self.conn.commit()
+            except BaseException:
+                if outer:
+                    self.conn.rollback()
+                raise
+            finally:
+                self._tx_depth -= 1
 
     def create_tables(self):
         self.conn.execute(
@@ -228,6 +269,7 @@ class KattisDbConn:
     # rejected (logged, not written) rather than stored under a wrong
     # shortname. See _log_write for the log lines statusd counts.
 
+    @_atomic
     def add_user_rows(self, rows, context, timestamp, force_tracked=False):
         a, rejected = [], []
         for r in rows:
@@ -250,8 +292,8 @@ class KattisDbConn:
             'INSERT INTO user_obs (timestamp, context, shortname, display_name, rank, score, place, affiliation) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
-        self.conn.commit()
 
+    @_atomic
     def add_affiliation_rows(self, rows, context, timestamp, force_tracked=False):
         a, rejected = [], []
         for r in rows:
@@ -274,8 +316,8 @@ class KattisDbConn:
             'INSERT INTO affiliation_obs (timestamp, context, shortname, display_name, rank, score, subdiv, num_users) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
-        self.conn.commit()
 
+    @_atomic
     def add_country_rows(self, rows, context, timestamp, force_tracked=False):
         a, rejected = [], []
         for r in rows:
@@ -298,8 +340,8 @@ class KattisDbConn:
             'INSERT INTO country_obs (timestamp, context, shortname, display_name, rank, score, num_users, num_affiliations) '
             'VALUES (?,?,?,?,?,?,?,?)', a
         )
-        self.conn.commit()
 
+    @_atomic
     def add_subdivision_rows(self, rows, context, timestamp, country, force_tracked=False):
         a, rejected = [], []
         for r in rows:
@@ -321,8 +363,8 @@ class KattisDbConn:
             'INSERT INTO subdivision_obs (timestamp, context, shortname, display_name, rank, score, country) '
             'VALUES (?,?,?,?,?,?,?)', a
         )
-        self.conn.commit()
 
+    @_atomic
     def add_language_rows(self, rows, context, timestamp, force_tracked=False):
         a = []
         for r in rows:
@@ -342,8 +384,8 @@ class KattisDbConn:
             'INSERT INTO language_obs (timestamp, context, shortname, display_name, rank, score, num_users) '
             'VALUES (?,?,?,?,?,?,?)', a
         )
-        self.conn.commit()
 
+    @_atomic
     def add_user_backstop(self, shortname, display_name, rank, score, timestamp):
         """Single-row write for the per-user backstop (/users/<slug>)."""
         self.conn.execute(
@@ -355,17 +397,17 @@ class KattisDbConn:
         # Touch entity — qualifies_tracked=True because backstop only runs for
         # already-tracked users and the observation alone proves liveness.
         self._touch_entity('user', shortname, display_name, timestamp, qualifies_tracked=True)
-        self.conn.commit()
 
     # ---- problem write path --------------------------------------------------
 
+    @_atomic
     def register_problems(self, rows, timestamp):
         """Discovery: register problems found on the /problems listing as
         tracked entities. `rows` is an iterable of (shortname, display_name)."""
         for shortname, display_name in rows:
             self._touch_entity('problem', shortname, display_name, timestamp, qualifies_tracked=True)
-        self.conn.commit()
 
+    @_atomic
     def add_problem_obs(self, shortname, display_name, timestamp,
                         difficulty_low, difficulty_high,
                         submissions, accepted, authors, full_solves):
@@ -378,24 +420,24 @@ class KattisDbConn:
              submissions, accepted, authors, full_solves)
         )
         self._touch_entity('problem', shortname, display_name, timestamp, qualifies_tracked=True)
-        self.conn.commit()
 
+    @_atomic
     def add_problem_verdicts(self, shortname, timestamp, slices):
         """`slices` is an iterable of (verdict, count)."""
         self.conn.executemany(
             'INSERT INTO problem_verdict (timestamp, shortname, verdict, count) VALUES (?,?,?,?)',
             [(timestamp, shortname, v, c) for v, c in slices]
         )
-        self.conn.commit()
 
+    @_atomic
     def add_problem_partial_difficulty(self, shortname, timestamp, breakpoints):
         """`breakpoints` is an iterable of (breakpoint, difficulty)."""
         self.conn.executemany(
             'INSERT INTO problem_partial_difficulty (timestamp, shortname, breakpoint, difficulty) VALUES (?,?,?,?)',
             [(timestamp, shortname, bp, d) for bp, d in breakpoints]
         )
-        self.conn.commit()
 
+    @_atomic
     def add_problem_toplist(self, shortname, timestamp, kind, rows):
         """`rows` is an iterable of
         (rank, user_shortname, user_display_name, value, language, solved_at)."""
@@ -405,7 +447,6 @@ class KattisDbConn:
             'VALUES (?,?,?,?,?,?,?,?,?)',
             [(timestamp, shortname, kind, *r) for r in rows]
         )
-        self.conn.commit()
 
     def problems_to_scrape(self, alive_since):
         """All tracked, alive problems ordered stalest-first (never-scraped
@@ -439,6 +480,7 @@ class KattisDbConn:
             (kind, shortname, display_name, int(qualifies_tracked), timestamp, timestamp)
         )
 
+    @_atomic
     def set_flags(self, kind, shortname, **flags):
         """Manually set entity flags. Creates the row if absent.
         Allowed flags: tracked, discover_users, discover_affiliations,
@@ -458,7 +500,6 @@ class KattisDbConn:
             f'ON CONFLICT(kind, shortname) DO UPDATE SET {updates}',
             (kind, shortname, *vals)
         )
-        self.conn.commit()
 
     # ---- read path -----------------------------------------------------------
 

@@ -74,15 +74,17 @@ class Scraper(KattisHttpClient):
         missing-tables[2] crash on subdivision-less countries)."""
         tables = self.download_tables(f"https://open.kattis.com/countries/{slug}")
         ts = self._ts(time)
-        if track:
-            self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=True)
-            self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=True)
-            self.kattis_conn.add_subdivision_rows( tables[2], context, ts, country=slug, force_tracked=True)
-            return
-        if observe_affiliations:
-            self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=False)
-        if observe_users:
-            self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=False)
+        # All tables of one scrape commit together, or not at all.
+        with self.kattis_conn.transaction():
+            if track:
+                self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=True)
+                self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=True)
+                self.kattis_conn.add_subdivision_rows( tables[2], context, ts, country=slug, force_tracked=True)
+                return
+            if observe_affiliations:
+                self.kattis_conn.add_affiliation_rows( tables[0], context, ts, force_tracked=False)
+            if observe_users:
+                self.kattis_conn.add_user_rows(        tables[1], context, ts, force_tracked=False)
 
     def scrape_affiliation(self, slug, display_name, context, time=None, track=True):
         """Scrape /affiliations/<slug>. track=True (discovery): force_track the

@@ -8,6 +8,10 @@ import db
 
 _HREF_RE = re.compile(r'<a [^>]*href="([^"]+)"')
 
+# urlopen's default is no timeout: a stalled connection would block the scraper
+# forever without raising, so neither the fail counter nor systemd would notice.
+HTTP_TIMEOUT_SECONDS = 60
+
 
 class EntityGone(Exception):
     """Raised when a per-entity scrape hits HTTP 404 — the entity no longer
@@ -26,7 +30,7 @@ class KattisHttpClient:
     def download_html(self, url):
         req = Request(url, headers={'User-Agent': 'Mozilla/5.0 (Contact: Joshua Andersson)'})
         try:
-            return urlopen(req).read().decode('utf-8')
+            return urlopen(req, timeout=HTTP_TIMEOUT_SECONDS).read().decode('utf-8')
         except HTTPError as e:
             if e.code == 404:
                 raise EntityGone(url) from e
