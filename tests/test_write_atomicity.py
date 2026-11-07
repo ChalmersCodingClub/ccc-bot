@@ -11,12 +11,13 @@ import os
 import sqlite3
 import sys
 import tempfile
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scraper.http_client as http_client
 from db import KattisDbConn
-from problem_scraper.scraper import ProblemScraper
+from problem_scraper.scraper import BlankStatsPage, ProblemScraper
 
 
 def _user_row(rank, name, href, score):
@@ -89,6 +90,73 @@ def test_problem_scrape_is_all_or_nothing():
     assert q('SELECT COUNT(*) FROM problem_obs') == 1
     assert q('SELECT COUNT(*) FROM problem_verdict') == 2
     assert q("SELECT user_shortname FROM problem_toplist WHERE kind='fastest'") == 'alice'
+
+
+def _t(ts):
+    return datetime.fromtimestamp(ts)
+
+
+def _summary_html(submissions):
+    # Trimmed live markup of the condensed summary table.
+    return ('<table class="table2 condensed mt-5">'
+            f'<tr><td style="min-width:230px">Submissions</td><td><span>{submissions}</span></td></tr>'
+            f'<tr><td>Accepted submissions</td><td><span>{submissions // 2}</span></td></tr>'
+            f'<tr><td>Authors</td><td><span>{submissions // 4}</span></td></tr>'
+            '</table>')
+
+
+def test_blank_stats_page_is_not_stored():
+    # Kattis glitch (seen in prod, e.g. 2026-07-27, 2026-11-05 01:00 UTC): the
+    # page comes back with zero counts, no donut and no toplists. Stored, its
+    # empty toplists would read as "tied / no holder", so it must be rejected
+    # once the problem has real stats on record.
+    ps = ProblemScraper.__new__(ProblemScraper)
+    ps.kattis_conn = KattisDbConn(':memory:')
+    ps.download_html = lambda url: _summary_html(172) + _stats_html()
+    ps.scrape_problem('foo', time=_t(1000))
+
+    ps.download_html = lambda url: '<h1>Foo — Problem Statistics</h1>' + _summary_html(0)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            ps.scrape_problem('foo', time=_t(2000))
+    except BlankStatsPage:
+        pass
+    else:
+        raise AssertionError('expected BlankStatsPage')
+    assert 'BLANK-PAGE problem_obs ctx=foo' in out.getvalue()
+    q = lambda sql: ps.kattis_conn.conn.execute(sql).fetchone()[0]
+    assert q('SELECT COUNT(*) FROM problem_obs') == 1, 'blank page was stored'
+    assert q('SELECT MAX(timestamp) FROM problem_obs') == 1000
+    assert q('SELECT COUNT(*) FROM problem_toplist') == 1
+
+    # A real page afterwards is stored as usual.
+    ps.download_html = lambda url: _summary_html(173) + _stats_html()
+    ps.scrape_problem('foo', time=_t(3000))
+    assert q('SELECT COUNT(*) FROM problem_obs') == 2
+
+    # Still rejected when the latest stored row is itself an old glitch (0
+    # submissions, stored before this check existed): compare to the max.
+    ps.kattis_conn.add_problem_obs('foo', 'Foo', 4000, None, None, 0, 0, 0, 0)
+    ps.download_html = lambda url: '<h1>Foo — Problem Statistics</h1>' + _summary_html(0)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ps.scrape_problem('foo', time=_t(5000))
+    except BlankStatsPage:
+        pass
+    else:
+        raise AssertionError('expected BlankStatsPage after a stored glitch row')
+
+
+def test_never_submitted_problem_is_stored():
+    # Zero submissions is legitimate for a problem with no prior stats (new /
+    # unsolved): no previous count to contradict it, so it's written.
+    ps = ProblemScraper.__new__(ProblemScraper)
+    ps.kattis_conn = KattisDbConn(':memory:')
+    ps.download_html = lambda url: '<h1>New — Problem Statistics</h1>' + _summary_html(0)
+    ps.scrape_problem('new', time=_t(1000))
+    ps.scrape_problem('new', time=_t(2000))
+    n = ps.kattis_conn.conn.execute('SELECT COUNT(*) FROM problem_obs').fetchone()[0]
+    assert n == 2
 
 
 def test_download_html_sets_timeout():

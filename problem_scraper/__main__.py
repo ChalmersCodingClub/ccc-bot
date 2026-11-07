@@ -2,7 +2,7 @@ import sys
 import time
 import traceback
 
-from .scraper import ProblemScraper
+from .scraper import BlankStatsPage, ProblemScraper
 from scraper.http_client import EntityGone
 
 POLITE_INTERVAL_SECONDS = 30            # between detail-page fetches
@@ -58,6 +58,10 @@ def main():
                 # Retired problem: don't bump last_seen_alive; it decays out
                 # if it also stops appearing in the listing.
                 print(f'{slug}: gone ({e})', flush=True)
+            except BlankStatsPage as e:
+                # Transient Kattis glitch, already logged as BLANK-PAGE; no
+                # traceback (a burst hits every problem for its duration).
+                print(f'{slug} skipped: {e}', flush=True)
             except Exception as e:
                 print(f'{slug} failed!\n  {e}', flush=True)
                 traceback.print_exc()

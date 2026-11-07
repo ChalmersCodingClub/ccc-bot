@@ -448,6 +448,14 @@ class KattisDbConn:
             [(timestamp, shortname, kind, *r) for r in rows]
         )
 
+    def max_problem_submissions(self, shortname):
+        """Highest `submissions` ever recorded for the problem (None if never
+        scraped). Max, not latest: submissions are cumulative, and the latest
+        row may itself be a blank-page glitch stored before that was rejected."""
+        return self.conn.execute(
+            'SELECT MAX(submissions) FROM problem_obs WHERE shortname=?', (shortname,)
+        ).fetchone()[0]
+
     def problems_to_scrape(self, alive_since):
         """All tracked, alive problems ordered stalest-first (never-scraped
         first, then oldest problem_obs). Returns [(shortname, display_name)].

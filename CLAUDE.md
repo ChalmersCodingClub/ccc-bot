@@ -281,6 +281,24 @@ jobs. Per-problem `EntityGone` (404, retired) is logged and doesn't bump
 `last_seen_alive` (decays after 10 days off the listing); other per-problem
 errors are logged and the rotation continues.
 
+⚠️ **Blank stats pages.** Kattis intermittently serves statistics pages with
+everything blanked — submissions/accepted/authors/full_solves 0, no verdict
+donut, no toplists — in bursts lasting minutes to a day (2026-07-27/28 hit
+~2,500 scrapes; also 06-14, 06-24/25, 07-06, 07-22, 07-30/31, 09-08, 09-11,
+10-05/06, 10-29, 11-05). Stored, such a page reads as "every toplist tied / no
+holder". `scrape_problem` therefore raises `BlankStatsPage` (logs
+`BLANK-PAGE problem_obs ctx=<slug> …`, writes nothing) when the page shows 0 or
+no submissions but the problem has a positive count on record
+(`max_problem_submissions` — max, not latest, since the latest row may itself
+be an old glitch) — cumulative counts never really drop to zero. Problems with
+no prior count pass (genuinely unsubmitted). The problem stays stalest and is retried next
+rotation. Keyed on the counts, not on "toplists empty", because a genuine new
+tie empties toplists too and would then be rejected forever. Test:
+`tests/test_write_atomicity.py`. ⚠️ **Rows from before this check (~3,350
+`problem_obs` with `submissions=0` after a nonzero scrape) are still in the
+DB** — when reading toplist history, treat a `problem_obs` row with
+`submissions=0` whose predecessor was nonzero as a missing scrape, not a tie.
+
 ## Bot (`main.py` + `kattis_cmd.py` + `plot.py`)
 
 **Slash-only** (the legacy `$`-prefix commands were removed; `message_content`
@@ -417,6 +435,19 @@ units' `ExecStart` points at `services/start*.sh`, so `chmod +x` those too.
     overcounts: Vincent Lagerros was 706 by bare-rank-1 vs 566 truly-untied; the
     140-gap is all shared-runtime ties. (Same idea applies to `shortest` —
     byte-length ties — if you ever attribute "shortest" titles.)
+  - **"Fastest solutions lost by <user>"** (asked for ad hoc; answer from the
+    live DB on po) means: problems where the user was the **untied** rank-1
+    `fastest` holder in some snapshot, but is not the untied holder in the
+    **current** snapshot (latest `problem_obs` timestamp, per the rules above).
+    That covers being overtaken *and* being tied at a non-zero runtime (still
+    listed #1 but no longer strictly faster — actionable, since they could get
+    faster). **Exclude "dead" problems — a current tie at 0.00**, whoever is in
+    it: the user's runtime is 0.00 and someone else matched it (or the list
+    blanked while the user was at 0.00), *or* the current rank 1 and rank 2 are
+    both 0.00 even without the user. Nothing can beat 0.00, so an untied #1 is
+    unreachable. A **single** untied 0.00 holder is still shown (a loss to it is
+    listed). For each loss, show the user's runtime,
+    current rank, and who is now on top at what runtime.
   - ⚠️ **A problem that transitions from having a toplist to NOT having one must
     drop its attribution entirely — never carry the old holder forward.** If a
     problem stops showing a top list (it had rank-1..N rows at an earlier scrape,

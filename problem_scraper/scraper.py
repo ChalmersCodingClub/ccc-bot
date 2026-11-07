@@ -17,6 +17,14 @@ _DONUT_RE         = re.compile(r'id="status-donut-data"[^>]*>\s*(\{.*?\})\s*</sc
 _SPAN_RE          = re.compile(r'<span>([^<]+)</span>')
 
 
+class BlankStatsPage(Exception):
+    """Kattis served a statistics page with its stats blanked out (zero
+    submissions, no verdicts, no toplists) for a problem that had real stats at
+    its last scrape. A transient Kattis glitch, not a real state: cumulative
+    counts never fall to zero, and storing it would read as "every toplist
+    tied / no holder"."""
+
+
 def _value(text):
     """Toplist value: score (100), runtime ('0.01 s'), or byte length (555)."""
     return float(text.replace(',', '').replace(' s', '').strip())
@@ -146,6 +154,19 @@ class ProblemScraper(KattisHttpClient):
                     print(f'REJECT-ALL problem_toplist ctx={shortname}/{kind} rows={total}', flush=True)
             raise ScrapeRejected(f'{shortname}: toplist rows with bad user links: '
                                  + ', '.join(f'{k} {len(b)}/{t}' for k, (b, t) in p['rejected'].items()))
+        if not p['submissions']:
+            # Kattis sometimes serves stats pages with everything blanked
+            # (submissions/accepted/authors 0, empty donut and toplists) — seen
+            # in bursts lasting minutes to a day. Write nothing: the empty
+            # toplists would be indistinguishable from real ties. The problem
+            # stays stalest and is retried next rotation. A problem that has
+            # genuinely never had a submission has no prior count, so it passes.
+            prev = self.kattis_conn.max_problem_submissions(shortname)
+            if prev:
+                print(f'BLANK-PAGE problem_obs ctx={shortname} submissions={p["submissions"]} prev={prev}',
+                      flush=True)
+                raise BlankStatsPage(f'{shortname}: stats page blank (submissions '
+                                     f'{p["submissions"]}, was {prev}); not stored')
         # One transaction: a problem_obs row committed without its toplists
         # would read as "no toplist = tied / no holder".
         with self.kattis_conn.transaction():
