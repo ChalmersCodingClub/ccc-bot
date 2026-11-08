@@ -76,6 +76,10 @@ contexts, only rank differs** (rank is position within that ranklist).
     grab its user toplist untracked; `observe_affiliations` is country-only.)
     Added via a guarded `ALTER TABLE` migration in `create_tables`.
   - `last_seen_alive` — last successful observation. Drives 10-day decay.
+    NULL (as on a fresh `set_flags` row) counts as alive. `_touch_entity`
+    must `COALESCE` before `max()` — SQLite's multi-arg `max()` returns NULL
+    if any arg is NULL, which once kept every manually-tracked entity's dates
+    NULL forever (never decaying). Test: `tests/test_entities.py`.
 
 ### Problem statistics tables
 

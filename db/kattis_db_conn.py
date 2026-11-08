@@ -477,14 +477,20 @@ class KattisDbConn:
         # would defeat uniqueness).
         if shortname is None:
             shortname = display_name
+        # COALESCE everywhere: SQLite's multi-arg max() returns NULL if ANY
+        # argument is NULL, and a row created by set_flags / /track-user starts
+        # with NULL first_seen/last_seen_alive — plain max() kept them NULL
+        # forever, so those entities could never decay. first_seen is filled
+        # once (first observation) and never moved.
         self.conn.execute(
             'INSERT INTO entities '
             '  (kind, shortname, display_name, tracked, first_seen, last_seen_alive) '
             'VALUES (?, ?, ?, ?, ?, ?) '
             'ON CONFLICT(kind, shortname) DO UPDATE SET '
             '  display_name=excluded.display_name, '
-            '  tracked=max(tracked, excluded.tracked), '
-            '  last_seen_alive=max(last_seen_alive, excluded.last_seen_alive)',
+            '  tracked=max(COALESCE(tracked, 0), excluded.tracked), '
+            '  first_seen=COALESCE(first_seen, excluded.first_seen), '
+            '  last_seen_alive=max(COALESCE(last_seen_alive, 0), excluded.last_seen_alive)',
             (kind, shortname, display_name, int(qualifies_tracked), timestamp, timestamp)
         )
 
